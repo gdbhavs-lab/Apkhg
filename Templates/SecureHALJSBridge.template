@@ -1,0 +1,73 @@
+package {{PACKAGE}};
+
+import android.webkit.JavascriptInterface;
+import android.webkit.WebView;
+import android.util.Log;
+
+import org.json.JSONObject;
+import org.json.JSONException;
+
+/**
+ * JavaScript Bridge للتواصل الآمن مع SecureHALBridge
+ */
+public class SecureHALJSBridge {
+    private static final String TAG = "SecureHALJSBridge";
+    private SecureHALBridge secureHALBridge;
+    private WebView webView;
+    
+    public SecureHALJSBridge(SecureHALBridge secureHALBridge, WebView webView) {
+        this.secureHALBridge = secureHALBridge;
+        this.webView = webView;
+    }
+    
+    @JavascriptInterface
+    public String initializeSecureChannel() {
+        try {
+            return secureHALBridge.initializeSecureChannel();
+        } catch (Exception e) {
+            Log.e(TAG, "Error initializing secure channel", e);
+            return createErrorResponse(e.getMessage());
+        }
+    }
+    
+    @JavascriptInterface
+    public String executeSecureCommand(String commandName, String encryptedData) {
+        try {
+            return secureHALBridge.executeSecureCommand(commandName, encryptedData);
+        } catch (Exception e) {
+            Log.e(TAG, "Error executing secure command", e);
+            return createErrorResponse(e.getMessage());
+        }
+    }
+    
+    @JavascriptInterface
+    public String getSecurityAuditLog() {
+        try {
+            return secureHALBridge.getSecurityAuditLog();
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting security audit log", e);
+            return createErrorResponse(e.getMessage());
+        }
+    }
+    
+    @JavascriptInterface
+    public String getSecurityReport() {
+        try {
+            return secureHALBridge.getSecurityReport();
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting security report", e);
+            return createErrorResponse(e.getMessage());
+        }
+    }
+    
+    private String createErrorResponse(String message) {
+        JSONObject error = new JSONObject();
+        try {
+            error.put("error", true);
+            error.put("message", message);
+        } catch (JSONException e) {
+            Log.e(TAG, "Error creating error response", e);
+        }
+        return error.toString();
+    }
+}

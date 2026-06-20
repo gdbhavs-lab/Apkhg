@@ -1,0 +1,842 @@
+package {{PACKAGE}};
+
+import android.content.Context;
+import android.webkit.WebView;
+import android.webkit.JavascriptInterface;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.Log;
+import java.lang.reflect.Method;
+import java.lang.reflect.Field;
+import java.lang.reflect.Constructor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.concurrent.ConcurrentHashMap;
+import org.json.JSONObject;
+import org.json.JSONArray;
+import org.json.JSONException;
+
+/**
+ * Dynamic Framework Injection System (DFIS) v1.0
+ * نظام حقن Framework الديناميكي للتحكم المتقدم
+ * 
+ * الميزات:
+ * - حقن ديناميكي للكود في Framework
+ * - تعديل سلوك النظام في وقت التشغيل
+ * - إنشاء خطافات (Hooks) متقدمة
+ * - تحكم في دورة حياة التطبيق
+ * - مراقبة وتعديل استدعاءات النظام
+ * - إنشاء واجهات برمجية مخصصة
+ */
+public class DFISManager {
+    private static final String TAG = "DFISManager";
+    
+    private Context context;
+    private WebView webView;
+    private Handler mainHandler;
+    private ExecutorService injectionExecutor;
+    
+    // مكونات النظام
+    private DynamicInjector injector;
+    private HookManager hookManager;
+    private ReflectionEngine reflectionEngine;
+    private RuntimeModifier runtimeModifier;
+    
+    // خرائط التتبع
+    private Map<String, InjectedComponent> injectedComponents;
+    private Map<String, Hook> activeHooks;
+    private Map<String, Object> cachedReflections;
+    
+    // إعدادات النظام
+    private boolean injectionEnabled = true;
+    private boolean safeMode = true;
+    private int maxInjections = 50;
+    
+    public DFISManager(Context context) {
+        this.context = context;
+        this.mainHandler = new Handler(Looper.getMainLooper());
+        this.injectionExecutor = Executors.newFixedThreadPool(2);
+        
+        initializeInjectionSystem();
+        Log.i(TAG, "Dynamic Framework Injection System initialized");
+    }
+    
+    public void setWebView(WebView webView) {
+        this.webView = webView;
+    }
+    
+    /**
+     * تهيئة نظام الحقن
+     */
+    private void initializeInjectionSystem() {
+        injector = new DynamicInjector();
+        hookManager = new HookManager();
+        reflectionEngine = new ReflectionEngine();
+        runtimeModifier = new RuntimeModifier();
+        
+        injectedComponents = new ConcurrentHashMap<>();
+        activeHooks = new ConcurrentHashMap<>();
+        cachedReflections = new ConcurrentHashMap<>();
+    }
+    
+    /**
+     * حقن مكون ديناميكي في Framework
+     */
+    @JavascriptInterface
+    public String injectComponent(String componentName, String targetClass, String injectionCode) {
+        if (!injectionEnabled) {
+            return createResponse(false, "Injection system disabled", null);
+        }
+        
+        try {
+            InjectedComponent component = injector.inject(componentName, targetClass, injectionCode);
+            injectedComponents.put(componentName, component);
+            
+            JSONObject result = new JSONObject();
+            result.put("componentId", component.getId());
+            result.put("injectionPoint", component.getInjectionPoint());
+            result.put("status", "injected");
+            
+            Log.i(TAG, "Component injected: " + componentName);
+            return createResponse(true, "Component injected successfully", result);
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Injection failed: " + e.getMessage());
+            return createResponse(false, "Injection failed: " + e.getMessage(), null);
+        }
+    }
+    
+    /**
+     * إنشاء خطاف (Hook) متقدم
+     */
+    @JavascriptInterface
+    public String createHook(String hookName, String targetMethod, String hookType, String callback) {
+        try {
+            Hook hook = hookManager.createHook(hookName, targetMethod, hookType, callback);
+            activeHooks.put(hookName, hook);
+            
+            JSONObject result = new JSONObject();
+            result.put("hookId", hook.getId());
+            result.put("targetMethod", targetMethod);
+            result.put("hookType", hookType);
+            result.put("status", "active");
+            
+            Log.i(TAG, "Hook created: " + hookName);
+            return createResponse(true, "Hook created successfully", result);
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Hook creation failed: " + e.getMessage());
+            return createResponse(false, "Hook creation failed: " + e.getMessage(), null);
+        }
+    }
+    
+    /**
+     * تعديل سلوك النظام في وقت التشغيل
+     */
+    @JavascriptInterface
+    public String modifyRuntime(String targetClass, String methodName, String newBehavior) {
+        try {
+            RuntimeModification modification = runtimeModifier.modify(targetClass, methodName, newBehavior);
+            
+            JSONObject result = new JSONObject();
+            result.put("modificationId", modification.getId());
+            result.put("originalBehavior", modification.getOriginalBehavior());
+            result.put("newBehavior", newBehavior);
+            result.put("status", "modified");
+            
+            Log.i(TAG, "Runtime modified: " + targetClass + "." + methodName);
+            return createResponse(true, "Runtime modified successfully", result);
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Runtime modification failed: " + e.getMessage());
+            return createResponse(false, "Runtime modification failed: " + e.getMessage(), null);
+        }
+    }
+    
+    /**
+     * استخدام محرك Reflection المتقدم
+     */
+    @JavascriptInterface
+    public String reflectClass(String className, String operation, String parameters) {
+        try {
+            Object result = reflectionEngine.execute(className, operation, parameters);
+            
+            JSONObject response = new JSONObject();
+            response.put("className", className);
+            response.put("operation", operation);
+            response.put("result", result != null ? result.toString() : "null");
+            response.put("type", result != null ? result.getClass().getSimpleName() : "null");
+            
+            Log.i(TAG, "Reflection executed: " + className + "." + operation);
+            return createResponse(true, "Reflection executed successfully", response);
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Reflection failed: " + e.getMessage());
+            return createResponse(false, "Reflection failed: " + e.getMessage(), null);
+        }
+    }
+    
+    /**
+     * مراقبة استدعاءات النظام
+     */
+    @JavascriptInterface
+    public String monitorSystemCalls(String targetPackage, String callType, boolean enable) {
+        try {
+            SystemCallMonitor monitor = new SystemCallMonitor(targetPackage, callType);
+            
+            if (enable) {
+                monitor.start();
+            } else {
+                monitor.stop();
+            }
+            
+            JSONObject result = new JSONObject();
+            result.put("targetPackage", targetPackage);
+            result.put("callType", callType);
+            result.put("monitoring", enable);
+            result.put("monitorId", monitor.getId());
+            
+            Log.i(TAG, "System call monitoring " + (enable ? "started" : "stopped"));
+            return createResponse(true, "System call monitoring configured", result);
+            
+        } catch (Exception e) {
+            Log.e(TAG, "System call monitoring failed: " + e.getMessage());
+            return createResponse(false, "System call monitoring failed: " + e.getMessage(), null);
+        }
+    }
+    
+    /**
+     * إنشاء واجهة برمجية مخصصة
+     */
+    @JavascriptInterface
+    public String createCustomAPI(String apiName, String methods, String permissions) {
+        try {
+            CustomAPI api = new CustomAPI(apiName, methods, permissions);
+            api.initialize(context);
+            
+            JSONObject result = new JSONObject();
+            result.put("apiName", apiName);
+            result.put("methods", new JSONArray(methods));
+            result.put("permissions", new JSONArray(permissions));
+            result.put("apiId", api.getId());
+            result.put("status", "created");
+            
+            Log.i(TAG, "Custom API created: " + apiName);
+            return createResponse(true, "Custom API created successfully", result);
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Custom API creation failed: " + e.getMessage());
+            return createResponse(false, "Custom API creation failed: " + e.getMessage(), null);
+        }
+    }
+    
+    /**
+     * الحصول على معلومات المكونات المحقونة
+     */
+    @JavascriptInterface
+    public String getInjectedComponents() {
+        try {
+            JSONArray components = new JSONArray();
+            
+            for (Map.Entry<String, InjectedComponent> entry : injectedComponents.entrySet()) {
+                JSONObject component = new JSONObject();
+                InjectedComponent comp = entry.getValue();
+                
+                component.put("name", entry.getKey());
+                component.put("id", comp.getId());
+                component.put("targetClass", comp.getTargetClass());
+                component.put("injectionPoint", comp.getInjectionPoint());
+                component.put("status", comp.getStatus());
+                component.put("injectionTime", comp.getInjectionTime());
+                
+                components.put(component);
+            }
+            
+            return createResponse(true, "Injected components retrieved", components);
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to get injected components: " + e.getMessage());
+            return createResponse(false, "Failed to get injected components", null);
+        }
+    }
+    
+    /**
+     * الحصول على معلومات الخطافات النشطة
+     */
+    @JavascriptInterface
+    public String getActiveHooks() {
+        try {
+            JSONArray hooks = new JSONArray();
+            
+            for (Map.Entry<String, Hook> entry : activeHooks.entrySet()) {
+                JSONObject hook = new JSONObject();
+                Hook h = entry.getValue();
+                
+                hook.put("name", entry.getKey());
+                hook.put("id", h.getId());
+                hook.put("targetMethod", h.getTargetMethod());
+                hook.put("hookType", h.getHookType());
+                hook.put("status", h.getStatus());
+                hook.put("callCount", h.getCallCount());
+                
+                hooks.put(hook);
+            }
+            
+            return createResponse(true, "Active hooks retrieved", hooks);
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to get active hooks: " + e.getMessage());
+            return createResponse(false, "Failed to get active hooks", null);
+        }
+    }
+    
+    /**
+     * تكوين إعدادات النظام
+     */
+    @JavascriptInterface
+    public String configureSystem(String setting, String value) {
+        try {
+            switch (setting) {
+                case "injectionEnabled":
+                    injectionEnabled = Boolean.parseBoolean(value);
+                    break;
+                case "safeMode":
+                    safeMode = Boolean.parseBoolean(value);
+                    break;
+                case "maxInjections":
+                    maxInjections = Integer.parseInt(value);
+                    break;
+                default:
+                    return createResponse(false, "Unknown setting: " + setting, null);
+            }
+            
+            JSONObject result = new JSONObject();
+            result.put("setting", setting);
+            result.put("value", value);
+            result.put("applied", true);
+            
+            Log.i(TAG, "System configured: " + setting + " = " + value);
+            return createResponse(true, "System configured successfully", result);
+            
+        } catch (Exception e) {
+            Log.e(TAG, "System configuration failed: " + e.getMessage());
+            return createResponse(false, "System configuration failed: " + e.getMessage(), null);
+        }
+    }
+    
+    /**
+     * إزالة مكون محقون
+     */
+    @JavascriptInterface
+    public String removeInjectedComponent(String componentName) {
+        try {
+            InjectedComponent component = injectedComponents.get(componentName);
+            if (component == null) {
+                return createResponse(false, "Component not found: " + componentName, null);
+            }
+            
+            injector.remove(component);
+            injectedComponents.remove(componentName);
+            
+            JSONObject result = new JSONObject();
+            result.put("componentName", componentName);
+            result.put("removed", true);
+            
+            Log.i(TAG, "Component removed: " + componentName);
+            return createResponse(true, "Component removed successfully", result);
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Component removal failed: " + e.getMessage());
+            return createResponse(false, "Component removal failed: " + e.getMessage(), null);
+        }
+    }
+    
+    /**
+     * إزالة خطاف نشط
+     */
+    @JavascriptInterface
+    public String removeHook(String hookName) {
+        try {
+            Hook hook = activeHooks.get(hookName);
+            if (hook == null) {
+                return createResponse(false, "Hook not found: " + hookName, null);
+            }
+            
+            hookManager.remove(hook);
+            activeHooks.remove(hookName);
+            
+            JSONObject result = new JSONObject();
+            result.put("hookName", hookName);
+            result.put("removed", true);
+            
+            Log.i(TAG, "Hook removed: " + hookName);
+            return createResponse(true, "Hook removed successfully", result);
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Hook removal failed: " + e.getMessage());
+            return createResponse(false, "Hook removal failed: " + e.getMessage(), null);
+        }
+    }
+    
+    /**
+     * تنظيف النظام
+     */
+    public void cleanup() {
+        try {
+            // إزالة جميع المكونات المحقونة
+            for (InjectedComponent component : injectedComponents.values()) {
+                injector.remove(component);
+            }
+            injectedComponents.clear();
+            
+            // إزالة جميع الخطافات
+            for (Hook hook : activeHooks.values()) {
+                hookManager.remove(hook);
+            }
+            activeHooks.clear();
+            
+            // تنظيف الذاكرة المؤقتة
+            cachedReflections.clear();
+            
+            // إيقاف المنفذ
+            if (injectionExecutor != null && !injectionExecutor.isShutdown()) {
+                injectionExecutor.shutdown();
+            }
+            
+            Log.i(TAG, "DFIS system cleaned up");
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Cleanup failed: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * إنشاء استجابة JSON
+     */
+    private String createResponse(boolean success, String message, Object data) {
+        try {
+            JSONObject response = new JSONObject();
+            response.put("success", success);
+            response.put("message", message);
+            response.put("timestamp", System.currentTimeMillis());
+            
+            if (data != null) {
+                response.put("data", data);
+            }
+            
+            return response.toString();
+            
+        } catch (JSONException e) {
+            Log.e(TAG, "Failed to create response: " + e.getMessage());
+            return "{\"success\":false,\"message\":\"Response creation failed\"}";
+        }
+    }
+    
+    // ===== الفئات الداخلية =====
+    
+    /**
+     * محرك الحقن الديناميكي
+     */
+    private class DynamicInjector {
+        private int componentCounter = 0;
+        
+        public InjectedComponent inject(String name, String targetClass, String code) throws Exception {
+            if (injectedComponents.size() >= maxInjections) {
+                throw new Exception("Maximum injections limit reached");
+            }
+            
+            // تحقق من الأمان في الوضع الآمن
+            if (safeMode && !isCodeSafe(code)) {
+                throw new Exception("Unsafe code detected in safe mode");
+            }
+            
+            // تنفيذ الحقن
+            Class<?> target = Class.forName(targetClass);
+            String injectionPoint = performInjection(target, code);
+            
+            return new InjectedComponent(
+                ++componentCounter,
+                name,
+                targetClass,
+                injectionPoint,
+                code,
+                System.currentTimeMillis()
+            );
+        }
+        
+        public void remove(InjectedComponent component) throws Exception {
+            // إزالة الحقن
+            Class<?> target = Class.forName(component.getTargetClass());
+            removeInjection(target, component.getInjectionPoint());
+        }
+        
+        private String performInjection(Class<?> target, String code) throws Exception {
+            // منطق الحقن الفعلي
+            // هذا مثال مبسط - في التطبيق الحقيقي سيكون أكثر تعقيداً
+            String injectionPoint = "injection_" + System.currentTimeMillis();
+            
+            // محاكاة عملية الحقن
+            Log.d(TAG, "Injecting code into " + target.getName() + " at point " + injectionPoint);
+            
+            return injectionPoint;
+        }
+        
+        private void removeInjection(Class<?> target, String injectionPoint) throws Exception {
+            // منطق إزالة الحقن
+            Log.d(TAG, "Removing injection from " + target.getName() + " at point " + injectionPoint);
+        }
+        
+        private boolean isCodeSafe(String code) {
+            // فحص أمان الكود
+            String[] dangerousPatterns = {
+                "System.exit",
+                "Runtime.getRuntime",
+                "ProcessBuilder",
+                "deleteOnExit",
+                "File.delete"
+            };
+            
+            for (String pattern : dangerousPatterns) {
+                if (code.contains(pattern)) {
+                    return false;
+                }
+            }
+            
+            return true;
+        }
+    }
+    
+    /**
+     * مدير الخطافات
+     */
+    private class HookManager {
+        private int hookCounter = 0;
+        
+        public Hook createHook(String name, String targetMethod, String hookType, String callback) throws Exception {
+            Hook hook = new Hook(
+                ++hookCounter,
+                name,
+                targetMethod,
+                hookType,
+                callback,
+                System.currentTimeMillis()
+            );
+            
+            installHook(hook);
+            return hook;
+        }
+        
+        public void remove(Hook hook) throws Exception {
+            uninstallHook(hook);
+        }
+        
+        private void installHook(Hook hook) throws Exception {
+            // منطق تثبيت الخطاف
+            Log.d(TAG, "Installing hook: " + hook.getName() + " on " + hook.getTargetMethod());
+        }
+        
+        private void uninstallHook(Hook hook) throws Exception {
+            // منطق إزالة الخطاف
+            Log.d(TAG, "Uninstalling hook: " + hook.getName());
+        }
+    }
+    
+    /**
+     * محرك Reflection المتقدم
+     */
+    private class ReflectionEngine {
+        public Object execute(String className, String operation, String parameters) throws Exception {
+            String cacheKey = className + ":" + operation + ":" + parameters;
+            
+            // التحقق من الذاكرة المؤقتة
+            if (cachedReflections.containsKey(cacheKey)) {
+                return cachedReflections.get(cacheKey);
+            }
+            
+            Class<?> clazz = Class.forName(className);
+            Object result = null;
+            
+            switch (operation) {
+                case "getFields":
+                    result = getFieldsInfo(clazz);
+                    break;
+                case "getMethods":
+                    result = getMethodsInfo(clazz);
+                    break;
+                case "getConstructors":
+                    result = getConstructorsInfo(clazz);
+                    break;
+                case "invoke":
+                    result = invokeMethod(clazz, parameters);
+                    break;
+                case "getField":
+                    result = getFieldValue(clazz, parameters);
+                    break;
+                case "setField":
+                    result = setFieldValue(clazz, parameters);
+                    break;
+                default:
+                    throw new Exception("Unknown operation: " + operation);
+            }
+            
+            // حفظ في الذاكرة المؤقتة
+            cachedReflections.put(cacheKey, result);
+            
+            return result;
+        }
+        
+        private JSONArray getFieldsInfo(Class<?> clazz) throws JSONException {
+            JSONArray fields = new JSONArray();
+            for (Field field : clazz.getDeclaredFields()) {
+                JSONObject fieldInfo = new JSONObject();
+                fieldInfo.put("name", field.getName());
+                fieldInfo.put("type", field.getType().getSimpleName());
+                fieldInfo.put("modifiers", field.getModifiers());
+                fields.put(fieldInfo);
+            }
+            return fields;
+        }
+        
+        private JSONArray getMethodsInfo(Class<?> clazz) throws JSONException {
+            JSONArray methods = new JSONArray();
+            for (Method method : clazz.getDeclaredMethods()) {
+                JSONObject methodInfo = new JSONObject();
+                methodInfo.put("name", method.getName());
+                methodInfo.put("returnType", method.getReturnType().getSimpleName());
+                methodInfo.put("parameterCount", method.getParameterCount());
+                methodInfo.put("modifiers", method.getModifiers());
+                methods.put(methodInfo);
+            }
+            return methods;
+        }
+        
+        private JSONArray getConstructorsInfo(Class<?> clazz) throws JSONException {
+            JSONArray constructors = new JSONArray();
+            for (Constructor<?> constructor : clazz.getDeclaredConstructors()) {
+                JSONObject constructorInfo = new JSONObject();
+                constructorInfo.put("parameterCount", constructor.getParameterCount());
+                constructorInfo.put("modifiers", constructor.getModifiers());
+                constructors.put(constructorInfo);
+            }
+            return constructors;
+        }
+        
+        private Object invokeMethod(Class<?> clazz, String parameters) throws Exception {
+            // تحليل المعاملات وتنفيذ الطريقة
+            // هذا مثال مبسط
+            JSONObject params = new JSONObject(parameters);
+            String methodName = params.getString("methodName");
+            
+            Method method = clazz.getDeclaredMethod(methodName);
+            method.setAccessible(true);
+            
+            return method.invoke(null); // للطرق الثابتة
+        }
+        
+        private Object getFieldValue(Class<?> clazz, String parameters) throws Exception {
+            JSONObject params = new JSONObject(parameters);
+            String fieldName = params.getString("fieldName");
+            
+            Field field = clazz.getDeclaredField(fieldName);
+            field.setAccessible(true);
+            
+            return field.get(null); // للحقول الثابتة
+        }
+        
+        private Object setFieldValue(Class<?> clazz, String parameters) throws Exception {
+            JSONObject params = new JSONObject(parameters);
+            String fieldName = params.getString("fieldName");
+            Object value = params.get("value");
+            
+            Field field = clazz.getDeclaredField(fieldName);
+            field.setAccessible(true);
+            field.set(null, value); // للحقول الثابتة
+            
+            return "Field set successfully";
+        }
+    }
+    
+    /**
+     * معدل وقت التشغيل
+     */
+    private class RuntimeModifier {
+        public RuntimeModification modify(String targetClass, String methodName, String newBehavior) throws Exception {
+            // منطق تعديل وقت التشغيل
+            Class<?> clazz = Class.forName(targetClass);
+            Method method = clazz.getDeclaredMethod(methodName);
+            
+            // حفظ السلوك الأصلي
+            String originalBehavior = "Original behavior of " + methodName;
+            
+            // تطبيق السلوك الجديد
+            // هذا مثال مبسط - في التطبيق الحقيقي سيتطلب تقنيات متقدمة
+            
+            return new RuntimeModification(
+                System.currentTimeMillis(),
+                targetClass,
+                methodName,
+                originalBehavior,
+                newBehavior
+            );
+        }
+    }
+    
+    /**
+     * مراقب استدعاءات النظام
+     */
+    private class SystemCallMonitor {
+        private String targetPackage;
+        private String callType;
+        private long id;
+        private boolean monitoring = false;
+        
+        public SystemCallMonitor(String targetPackage, String callType) {
+            this.targetPackage = targetPackage;
+            this.callType = callType;
+            this.id = System.currentTimeMillis();
+        }
+        
+        public void start() {
+            monitoring = true;
+            Log.d(TAG, "Started monitoring " + callType + " calls for " + targetPackage);
+        }
+        
+        public void stop() {
+            monitoring = false;
+            Log.d(TAG, "Stopped monitoring " + callType + " calls for " + targetPackage);
+        }
+        
+        public long getId() {
+            return id;
+        }
+    }
+    
+    /**
+     * واجهة برمجية مخصصة
+     */
+    private class CustomAPI {
+        private String name;
+        private String methods;
+        private String permissions;
+        private long id;
+        
+        public CustomAPI(String name, String methods, String permissions) {
+            this.name = name;
+            this.methods = methods;
+            this.permissions = permissions;
+            this.id = System.currentTimeMillis();
+        }
+        
+        public void initialize(Context context) {
+            Log.d(TAG, "Initializing custom API: " + name);
+        }
+        
+        public long getId() {
+            return id;
+        }
+    }
+    
+    // ===== فئات البيانات =====
+    
+    /**
+     * مكون محقون
+     */
+    private static class InjectedComponent {
+        private final long id;
+        private final String name;
+        private final String targetClass;
+        private final String injectionPoint;
+        private final String code;
+        private final long injectionTime;
+        private String status = "active";
+        
+        public InjectedComponent(long id, String name, String targetClass, 
+                               String injectionPoint, String code, long injectionTime) {
+            this.id = id;
+            this.name = name;
+            this.targetClass = targetClass;
+            this.injectionPoint = injectionPoint;
+            this.code = code;
+            this.injectionTime = injectionTime;
+        }
+        
+        // Getters
+        public long getId() { return id; }
+        public String getName() { return name; }
+        public String getTargetClass() { return targetClass; }
+        public String getInjectionPoint() { return injectionPoint; }
+        public String getCode() { return code; }
+        public long getInjectionTime() { return injectionTime; }
+        public String getStatus() { return status; }
+        
+        public void setStatus(String status) { this.status = status; }
+    }
+    
+    /**
+     * خطاف
+     */
+    private static class Hook {
+        private final long id;
+        private final String name;
+        private final String targetMethod;
+        private final String hookType;
+        private final String callback;
+        private final long creationTime;
+        private String status = "active";
+        private int callCount = 0;
+        
+        public Hook(long id, String name, String targetMethod, String hookType, 
+                   String callback, long creationTime) {
+            this.id = id;
+            this.name = name;
+            this.targetMethod = targetMethod;
+            this.hookType = hookType;
+            this.callback = callback;
+            this.creationTime = creationTime;
+        }
+        
+        // Getters
+        public long getId() { return id; }
+        public String getName() { return name; }
+        public String getTargetMethod() { return targetMethod; }
+        public String getHookType() { return hookType; }
+        public String getCallback() { return callback; }
+        public long getCreationTime() { return creationTime; }
+        public String getStatus() { return status; }
+        public int getCallCount() { return callCount; }
+        
+        public void setStatus(String status) { this.status = status; }
+        public void incrementCallCount() { this.callCount++; }
+    }
+    
+    /**
+     * تعديل وقت التشغيل
+     */
+    private static class RuntimeModification {
+        private final long id;
+        private final String targetClass;
+        private final String methodName;
+        private final String originalBehavior;
+        private final String newBehavior;
+        
+        public RuntimeModification(long id, String targetClass, String methodName,
+                                 String originalBehavior, String newBehavior) {
+            this.id = id;
+            this.targetClass = targetClass;
+            this.methodName = methodName;
+            this.originalBehavior = originalBehavior;
+            this.newBehavior = newBehavior;
+        }
+        
+        // Getters
+        public long getId() { return id; }
+        public String getTargetClass() { return targetClass; }
+        public String getMethodName() { return methodName; }
+        public String getOriginalBehavior() { return originalBehavior; }
+        public String getNewBehavior() { return newBehavior; }
+    }
+}

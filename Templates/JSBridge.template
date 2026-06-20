@@ -1,0 +1,1012 @@
+package {{PACKAGE}};
+
+import android.content.Context;
+import android.webkit.JavascriptInterface;
+import android.webkit.WebView;
+import android.widget.Toast;
+import android.os.Vibrator;
+import android.os.Environment;
+import android.content.ClipboardManager;
+import android.content.ClipData;
+import android.provider.Settings;
+import android.provider.MediaStore;
+import android.os.Build;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
+import android.net.Uri;
+import android.content.Intent;
+import android.util.Base64;
+import android.media.MediaRecorder;
+import android.media.MediaPlayer;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Matrix;
+import android.app.Activity;
+import androidx.core.content.FileProvider;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.io.DataOutputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+
+/**
+ * JavaScript Bridge - {{APP}}
+ * 
+ * === Basic Functions ===
+ * AppBridge.showToast("Hello!");
+ * AppBridge.vibrate(500);
+ * AppBridge.copyToClipboard("text");
+ * var text = AppBridge.getClipboard();
+ * 
+ * === Device Info ===
+ * AppBridge.getDeviceId();
+ * AppBridge.getDeviceModel();
+ * AppBridge.getAndroidVersion();
+ * AppBridge.isNetworkAvailable();
+ * AppBridge.getBatteryLevel();
+ * AppBridge.getStorageInfo();
+ * 
+ * === Share & Open ===
+ * AppBridge.shareText("title", "text");
+ * AppBridge.shareFile("/path/to/file");
+ * AppBridge.openUrl("https://...");
+ * AppBridge.openEmail("email", "subject", "body");
+ * AppBridge.dial("123456");
+ * 
+ * === File Operations ===
+ * AppBridge.saveFile("filename.txt", "content");
+ * AppBridge.saveBase64File("image.png", base64Data);
+ * var content = AppBridge.readFile("filename.txt");
+ * var base64 = AppBridge.readFileBase64("image.png");
+ * var exists = AppBridge.fileExists("filename.txt");
+ * AppBridge.deleteFile("filename.txt");
+ * var files = AppBridge.listFiles("folder");
+ * AppBridge.createFolder("folder");
+ * 
+ * === Storage ===
+ * AppBridge.saveData("key", "value");
+ * var value = AppBridge.getData("key");
+ * AppBridge.removeData("key");
+ * 
+ * === Audio Recording ===
+ * AppBridge.startRecording("audio.mp3");
+ * AppBridge.stopRecording();
+ * AppBridge.playAudio("audio.mp3");
+ * AppBridge.uploadAudio("audio.mp3", "https://server.com/upload");
+ * 
+ * === Camera & Gallery ===
+ * AppBridge.takePhoto("callback_function");
+ * AppBridge.pickFromGallery("callback_function");
+ * AppBridge.pickImage("callback_function"); // اختيار: كاميرا أو معرض
+ * AppBridge.getLastImage(); // آخر صورة كـ Base64
+ * AppBridge.resizeImage(base64, 800, 600); // تصغير
+ */
+public class JSBridge {
+    private Context context;
+    private WebView webView;
+    private static final String APP_FOLDER = "{{APP}}";
+    
+    // Audio Recording
+    private MediaRecorder mediaRecorder;
+    private MediaPlayer mediaPlayer;
+    private String currentRecordingPath;
+    private long recordingStartTime;
+    private boolean isRecording = false;
+    
+    // Camera
+    public static final int REQUEST_CAMERA = 201;
+    public static final int REQUEST_GALLERY = 202;
+    public static final int REQUEST_PICK_IMAGE = 203;
+    private static String cameraCallback;
+    private static String lastImageBase64;
+    private static Uri cameraImageUri;
+    private static int targetWidth = 0;
+    private static int targetHeight = 0;
+    private static int imageQuality = 85;
+    
+    public JSBridge(Context context) {
+        this.context = context;
+    }
+    
+    public void setWebView(WebView webView) {
+        this.webView = webView;
+        createAppFolder();
+    }
+    
+    private void createAppFolder() {
+        File folder = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), APP_FOLDER);
+        if (!folder.exists()) {
+            folder.mkdirs();
+        }
+    }
+    
+    private File getAppFolder() {
+        return new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), APP_FOLDER);
+    }
+
+    // ==================== BASIC ====================
+    
+    @JavascriptInterface
+    public void showToast(String message) {
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show();
+    }
+    
+    @JavascriptInterface
+    public void showToastLong(String message) {
+        Toast.makeText(context, message, Toast.LENGTH_LONG).show();
+    }
+    
+    @JavascriptInterface
+    public void vibrate(int milliseconds) {
+        try {
+            Vibrator v = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
+            if (v != null && v.hasVibrator()) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    v.vibrate(android.os.VibrationEffect.createOneShot(milliseconds, android.os.VibrationEffect.DEFAULT_AMPLITUDE));
+                } else {
+                    v.vibrate(milliseconds);
+                }
+            }
+        } catch (Exception e) {}
+    }
+    
+    @JavascriptInterface
+    public void copyToClipboard(String text) {
+        try {
+            ClipboardManager clipboard = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+            ClipData clip = ClipData.newPlainText("text", text);
+            clipboard.setPrimaryClip(clip);
+            showToast("Copied!");
+        } catch (Exception e) {}
+    }
+    
+    @JavascriptInterface
+    public String getClipboard() {
+        try {
+            ClipboardManager clipboard = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard.hasPrimaryClip()) {
+                ClipData.Item item = clipboard.getPrimaryClip().getItemAt(0);
+                return item.getText().toString();
+            }
+        } catch (Exception e) {}
+        return "";
+    }
+
+    // ==================== DEVICE INFO ====================
+    
+    @JavascriptInterface
+    public String getDeviceId() {
+        try {
+            return Settings.Secure.getString(context.getContentResolver(), Settings.Secure.ANDROID_ID);
+        } catch (Exception e) {
+            return "";
+        }
+    }
+    
+    @JavascriptInterface
+    public String getDeviceModel() {
+        return Build.MANUFACTURER + " " + Build.MODEL;
+    }
+    
+    @JavascriptInterface
+    public String getAndroidVersion() {
+        return Build.VERSION.RELEASE;
+    }
+    
+    @JavascriptInterface
+    public int getApiLevel() {
+        return Build.VERSION.SDK_INT;
+    }
+    
+    @JavascriptInterface
+    public boolean isNetworkAvailable() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+            NetworkInfo activeNetwork = cm.getActiveNetworkInfo();
+            return activeNetwork != null && activeNetwork.isConnected();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+    
+    @JavascriptInterface
+    public String getNetworkType() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+            NetworkInfo info = cm.getActiveNetworkInfo();
+            if (info != null && info.isConnected()) {
+                if (info.getType() == ConnectivityManager.TYPE_WIFI) return "wifi";
+                if (info.getType() == ConnectivityManager.TYPE_MOBILE) return "mobile";
+            }
+            return "none";
+        } catch (Exception e) {
+            return "unknown";
+        }
+    }
+    
+    @JavascriptInterface
+    public int getBatteryLevel() {
+        try {
+            android.content.IntentFilter filter = new android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+            Intent batteryStatus = context.registerReceiver(null, filter);
+            int level = batteryStatus.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1);
+            int scale = batteryStatus.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1);
+            return (int) ((level / (float) scale) * 100);
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+    
+    @JavascriptInterface
+    public String getStorageInfo() {
+        try {
+            File path = Environment.getExternalStorageDirectory();
+            android.os.StatFs stat = new android.os.StatFs(path.getPath());
+            long total = stat.getTotalBytes();
+            long free = stat.getAvailableBytes();
+            long used = total - free;
+            return String.format("{\"total\":%d,\"used\":%d,\"free\":%d}", total, used, free);
+        } catch (Exception e) {
+            return "{\"error\":\"" + e.getMessage() + "\"}";
+        }
+    }
+
+    // ==================== SHARE & OPEN ====================
+    
+    @JavascriptInterface
+    public void shareText(String title, String text) {
+        try {
+            Intent intent = new Intent(Intent.ACTION_SEND);
+            intent.setType("text/plain");
+            intent.putExtra(Intent.EXTRA_SUBJECT, title);
+            intent.putExtra(Intent.EXTRA_TEXT, text);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(Intent.createChooser(intent, "Share via"));
+        } catch (Exception e) {}
+    }
+    
+    @JavascriptInterface
+    public void shareFile(String filePath) {
+        try {
+            File file = new File(filePath);
+            if (!file.exists()) {
+                file = new File(getAppFolder(), filePath);
+            }
+            if (file.exists()) {
+                Uri uri;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    // Android 7.0+ يحتاج FileProvider
+                    uri = FileProvider.getUriForFile(context, 
+                        context.getPackageName() + ".fileprovider", file);
+                } else {
+                    uri = Uri.fromFile(file);
+                }
+                Intent intent = new Intent(Intent.ACTION_SEND);
+                intent.setType(getMimeType(file.getName()));
+                intent.putExtra(Intent.EXTRA_STREAM, uri);
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(Intent.createChooser(intent, "Share file"));
+            } else {
+                showToast("File not found");
+            }
+        } catch (Exception e) {
+            showToast("Share failed: " + e.getMessage());
+        }
+    }
+    
+    private String getMimeType(String filename) {
+        String ext = filename.substring(filename.lastIndexOf(".") + 1).toLowerCase();
+        switch (ext) {
+            case "jpg": case "jpeg": return "image/jpeg";
+            case "png": return "image/png";
+            case "gif": return "image/gif";
+            case "pdf": return "application/pdf";
+            case "txt": return "text/plain";
+            case "html": return "text/html";
+            case "mp3": return "audio/mpeg";
+            case "mp4": return "video/mp4";
+            case "zip": return "application/zip";
+            default: return "*/*";
+        }
+    }
+    
+    @JavascriptInterface
+    public void openUrl(String url) {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setData(Uri.parse(url));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(intent);
+        } catch (Exception e) {}
+    }
+    
+    @JavascriptInterface
+    public void openEmail(String email, String subject, String body) {
+        try {
+            Intent intent = new Intent(Intent.ACTION_SENDTO);
+            intent.setData(Uri.parse("mailto:" + email));
+            intent.putExtra(Intent.EXTRA_SUBJECT, subject);
+            intent.putExtra(Intent.EXTRA_TEXT, body);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(intent);
+        } catch (Exception e) {}
+    }
+    
+    @JavascriptInterface
+    public void dial(String phone) {
+        try {
+            Intent intent = new Intent(Intent.ACTION_DIAL);
+            intent.setData(Uri.parse("tel:" + phone));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(intent);
+        } catch (Exception e) {}
+    }
+
+    // ==================== FILE OPERATIONS ====================
+    
+    @JavascriptInterface
+    public boolean saveFile(String filename, String content) {
+        try {
+            File file = new File(getAppFolder(), filename);
+            file.getParentFile().mkdirs();
+            FileOutputStream fos = new FileOutputStream(file);
+            fos.write(content.getBytes("UTF-8"));
+            fos.close();
+            showToast("File saved: " + filename);
+            return true;
+        } catch (Exception e) {
+            showToast("Save failed: " + e.getMessage());
+            return false;
+        }
+    }
+    
+    @JavascriptInterface
+    public boolean saveBase64File(String filename, String base64Data) {
+        try {
+            // Remove data URL prefix if present
+            String data = base64Data;
+            if (data.contains(",")) {
+                data = data.substring(data.indexOf(",") + 1);
+            }
+            byte[] bytes = Base64.decode(data, Base64.DEFAULT);
+            File file = new File(getAppFolder(), filename);
+            file.getParentFile().mkdirs();
+            FileOutputStream fos = new FileOutputStream(file);
+            fos.write(bytes);
+            fos.close();
+            showToast("File saved: " + filename);
+            return true;
+        } catch (Exception e) {
+            showToast("Save failed: " + e.getMessage());
+            return false;
+        }
+    }
+    
+    @JavascriptInterface
+    public String readFile(String filename) {
+        try {
+            File file = new File(getAppFolder(), filename);
+            if (!file.exists()) return "";
+            FileInputStream fis = new FileInputStream(file);
+            BufferedReader reader = new BufferedReader(new InputStreamReader(fis, "UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                sb.append(line).append("\n");
+            }
+            reader.close();
+            return sb.toString().trim();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+    
+    @JavascriptInterface
+    public String readFileBase64(String filename) {
+        try {
+            File file = new File(getAppFolder(), filename);
+            if (!file.exists()) return "";
+            FileInputStream fis = new FileInputStream(file);
+            byte[] bytes = new byte[(int) file.length()];
+            fis.read(bytes);
+            fis.close();
+            return Base64.encodeToString(bytes, Base64.NO_WRAP);
+        } catch (Exception e) {
+            return "";
+        }
+    }
+    
+    @JavascriptInterface
+    public boolean fileExists(String filename) {
+        File file = new File(getAppFolder(), filename);
+        return file.exists();
+    }
+    
+    @JavascriptInterface
+    public boolean deleteFile(String filename) {
+        try {
+            File file = new File(getAppFolder(), filename);
+            if (file.exists()) {
+                boolean deleted = file.delete();
+                if (deleted) showToast("File deleted");
+                return deleted;
+            }
+            return false;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+    
+    @JavascriptInterface
+    public String listFiles(String folder) {
+        try {
+            File dir = folder.isEmpty() ? getAppFolder() : new File(getAppFolder(), folder);
+            if (!dir.exists() || !dir.isDirectory()) return "[]";
+            File[] files = dir.listFiles();
+            if (files == null) return "[]";
+            StringBuilder sb = new StringBuilder("[");
+            for (int i = 0; i < files.length; i++) {
+                File f = files[i];
+                if (i > 0) sb.append(",");
+                sb.append(String.format("{\"name\":\"%s\",\"isDir\":%b,\"size\":%d}", 
+                    f.getName(), f.isDirectory(), f.length()));
+            }
+            sb.append("]");
+            return sb.toString();
+        } catch (Exception e) {
+            return "[]";
+        }
+    }
+    
+    @JavascriptInterface
+    public boolean createFolder(String folderName) {
+        try {
+            File folder = new File(getAppFolder(), folderName);
+            return folder.mkdirs();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+    
+    @JavascriptInterface
+    public String getFilePath(String filename) {
+        return new File(getAppFolder(), filename).getAbsolutePath();
+    }
+
+    // ==================== LOCAL STORAGE ====================
+    
+    @JavascriptInterface
+    public void saveData(String key, String value) {
+        try {
+            android.content.SharedPreferences prefs = context.getSharedPreferences("AppData", Context.MODE_PRIVATE);
+            prefs.edit().putString(key, value).apply();
+        } catch (Exception e) {}
+    }
+    
+    @JavascriptInterface
+    public String getData(String key) {
+        try {
+            android.content.SharedPreferences prefs = context.getSharedPreferences("AppData", Context.MODE_PRIVATE);
+            return prefs.getString(key, "");
+        } catch (Exception e) {
+            return "";
+        }
+    }
+    
+    @JavascriptInterface
+    public void removeData(String key) {
+        try {
+            android.content.SharedPreferences prefs = context.getSharedPreferences("AppData", Context.MODE_PRIVATE);
+            prefs.edit().remove(key).apply();
+        } catch (Exception e) {}
+    }
+    
+    @JavascriptInterface
+    public void clearAllData() {
+        try {
+            android.content.SharedPreferences prefs = context.getSharedPreferences("AppData", Context.MODE_PRIVATE);
+            prefs.edit().clear().apply();
+        } catch (Exception e) {}
+    }
+
+    // ==================== APP ====================
+    
+    @JavascriptInterface
+    public String getAppVersion() {
+        try {
+            return context.getPackageManager().getPackageInfo(context.getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return "1.0.0";
+        }
+    }
+    
+    @JavascriptInterface
+    public void exitApp() {
+        ((android.app.Activity) context).finish();
+    }
+    
+    @JavascriptInterface
+    public void restartApp() {
+        try {
+            Intent intent = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
+            intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(intent);
+            ((android.app.Activity) context).finish();
+        } catch (Exception e) {}
+    }
+
+    // ==================== AUDIO RECORDING ====================
+    
+    @JavascriptInterface
+    public boolean startRecording(String filename) {
+        try {
+            if (isRecording) {
+                stopRecording();
+            }
+            
+            File audioFile = new File(getAppFolder(), filename);
+            audioFile.getParentFile().mkdirs();
+            currentRecordingPath = audioFile.getAbsolutePath();
+            
+            mediaRecorder = new MediaRecorder();
+            mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+            
+            // تحديد الصيغة بناءً على امتداد الملف
+            if (filename.toLowerCase().endsWith(".mp3") || filename.toLowerCase().endsWith(".aac")) {
+                mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+                mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+            } else {
+                // WAV/3GP
+                mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.THREE_GPP);
+                mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AMR_NB);
+            }
+            
+            mediaRecorder.setAudioEncodingBitRate(128000);
+            mediaRecorder.setAudioSamplingRate(44100);
+            mediaRecorder.setOutputFile(currentRecordingPath);
+            
+            mediaRecorder.prepare();
+            mediaRecorder.start();
+            
+            recordingStartTime = System.currentTimeMillis();
+            isRecording = true;
+            showToast("Recording started");
+            return true;
+        } catch (Exception e) {
+            showToast("Recording failed: " + e.getMessage());
+            return false;
+        }
+    }
+    
+    @JavascriptInterface
+    public String stopRecording() {
+        try {
+            if (mediaRecorder != null && isRecording) {
+                mediaRecorder.stop();
+                mediaRecorder.release();
+                mediaRecorder = null;
+                isRecording = false;
+                showToast("Recording saved");
+                return currentRecordingPath;
+            }
+        } catch (Exception e) {
+            showToast("Stop failed: " + e.getMessage());
+        }
+        return "";
+    }
+    
+    @JavascriptInterface
+    public boolean isRecording() {
+        return isRecording;
+    }
+    
+    @JavascriptInterface
+    public long getRecordingDuration() {
+        if (isRecording) {
+            return System.currentTimeMillis() - recordingStartTime;
+        }
+        return 0;
+    }
+    
+    @JavascriptInterface
+    public int getRecordingAmplitude() {
+        try {
+            if (mediaRecorder != null && isRecording) {
+                return mediaRecorder.getMaxAmplitude();
+            }
+        } catch (Exception e) {}
+        return 0;
+    }
+    
+    @JavascriptInterface
+    public boolean playAudio(String filename) {
+        try {
+            stopAudio();
+            
+            File audioFile = new File(filename);
+            if (!audioFile.exists()) {
+                audioFile = new File(getAppFolder(), filename);
+            }
+            
+            if (!audioFile.exists()) {
+                showToast("Audio file not found");
+                return false;
+            }
+            
+            mediaPlayer = new MediaPlayer();
+            mediaPlayer.setDataSource(audioFile.getAbsolutePath());
+            mediaPlayer.prepare();
+            mediaPlayer.start();
+            return true;
+        } catch (Exception e) {
+            showToast("Play failed: " + e.getMessage());
+            return false;
+        }
+    }
+    
+    @JavascriptInterface
+    public void stopAudio() {
+        try {
+            if (mediaPlayer != null) {
+                if (mediaPlayer.isPlaying()) {
+                    mediaPlayer.stop();
+                }
+                mediaPlayer.release();
+                mediaPlayer = null;
+            }
+        } catch (Exception e) {}
+    }
+    
+    @JavascriptInterface
+    public void pauseAudio() {
+        try {
+            if (mediaPlayer != null && mediaPlayer.isPlaying()) {
+                mediaPlayer.pause();
+            }
+        } catch (Exception e) {}
+    }
+    
+    @JavascriptInterface
+    public void resumeAudio() {
+        try {
+            if (mediaPlayer != null && !mediaPlayer.isPlaying()) {
+                mediaPlayer.start();
+            }
+        } catch (Exception e) {}
+    }
+    
+    @JavascriptInterface
+    public int getAudioDuration(String filename) {
+        try {
+            File audioFile = new File(filename);
+            if (!audioFile.exists()) {
+                audioFile = new File(getAppFolder(), filename);
+            }
+            MediaPlayer mp = new MediaPlayer();
+            mp.setDataSource(audioFile.getAbsolutePath());
+            mp.prepare();
+            int duration = mp.getDuration();
+            mp.release();
+            return duration;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+    
+    @JavascriptInterface
+    public int getAudioPosition() {
+        try {
+            if (mediaPlayer != null) {
+                return mediaPlayer.getCurrentPosition();
+            }
+        } catch (Exception e) {}
+        return 0;
+    }
+    
+    @JavascriptInterface
+    public void seekAudio(int position) {
+        try {
+            if (mediaPlayer != null) {
+                mediaPlayer.seekTo(position);
+            }
+        } catch (Exception e) {}
+    }
+    
+    @JavascriptInterface
+    public void uploadAudio(final String filename, final String serverUrl) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                uploadFileToServer(filename, serverUrl);
+            }
+        }).start();
+    }
+    
+    private void uploadFileToServer(String filename, String serverUrl) {
+        HttpURLConnection conn = null;
+        DataOutputStream dos = null;
+        String boundary = "*****" + System.currentTimeMillis() + "*****";
+        String lineEnd = "\r\n";
+        String twoHyphens = "--";
+        
+        try {
+            File file = new File(filename);
+            if (!file.exists()) {
+                file = new File(getAppFolder(), filename);
+            }
+            
+            if (!file.exists()) {
+                showToastOnUI("File not found");
+                return;
+            }
+            
+            FileInputStream fis = new FileInputStream(file);
+            
+            URL url = new URL(serverUrl);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setDoInput(true);
+            conn.setDoOutput(true);
+            conn.setUseCaches(false);
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Connection", "Keep-Alive");
+            conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+            
+            dos = new DataOutputStream(conn.getOutputStream());
+            
+            dos.writeBytes(twoHyphens + boundary + lineEnd);
+            dos.writeBytes("Content-Disposition: form-data; name=\"file\"; filename=\"" + file.getName() + "\"" + lineEnd);
+            dos.writeBytes("Content-Type: audio/mpeg" + lineEnd);
+            dos.writeBytes(lineEnd);
+            
+            byte[] buffer = new byte[4096];
+            int bytesRead;
+            while ((bytesRead = fis.read(buffer)) != -1) {
+                dos.write(buffer, 0, bytesRead);
+            }
+            
+            dos.writeBytes(lineEnd);
+            dos.writeBytes(twoHyphens + boundary + twoHyphens + lineEnd);
+            
+            fis.close();
+            dos.flush();
+            dos.close();
+            
+            int responseCode = conn.getResponseCode();
+            if (responseCode == 200) {
+                showToastOnUI("Upload successful");
+            } else {
+                showToastOnUI("Upload failed: " + responseCode);
+            }
+            
+        } catch (Exception e) {
+            showToastOnUI("Upload error: " + e.getMessage());
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+    
+    private void showToastOnUI(final String message) {
+        ((android.app.Activity) context).runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                Toast.makeText(context, message, Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    // ==================== CAMERA & GALLERY ====================
+    
+    @JavascriptInterface
+    public void takePhoto(String callback) {
+        takePhotoWithSize(callback, 0, 0, 85);
+    }
+    
+    @JavascriptInterface
+    public void takePhotoWithSize(String callback, int width, int height, int quality) {
+        try {
+            cameraCallback = callback;
+            targetWidth = width;
+            targetHeight = height;
+            imageQuality = quality;
+            
+            Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+            
+            // إنشاء ملف للصورة
+            File photoFile = new File(getAppFolder(), "camera_" + System.currentTimeMillis() + ".jpg");
+            photoFile.getParentFile().mkdirs();
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                cameraImageUri = FileProvider.getUriForFile(context, 
+                    context.getPackageName() + ".fileprovider", photoFile);
+            } else {
+                cameraImageUri = Uri.fromFile(photoFile);
+            }
+            
+            intent.putExtra(MediaStore.EXTRA_OUTPUT, cameraImageUri);
+            intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            ((Activity) context).startActivityForResult(intent, REQUEST_CAMERA);
+        } catch (Exception e) {
+            showToast("Camera error: " + e.getMessage());
+        }
+    }
+    
+    @JavascriptInterface
+    public void pickFromGallery(String callback) {
+        pickFromGalleryWithSize(callback, 0, 0, 85);
+    }
+    
+    @JavascriptInterface
+    public void pickFromGalleryWithSize(String callback, int width, int height, int quality) {
+        try {
+            cameraCallback = callback;
+            targetWidth = width;
+            targetHeight = height;
+            imageQuality = quality;
+            
+            Intent intent = new Intent(Intent.ACTION_PICK);
+            intent.setType("image/*");
+            ((Activity) context).startActivityForResult(intent, REQUEST_GALLERY);
+        } catch (Exception e) {
+            showToast("Gallery error: " + e.getMessage());
+        }
+    }
+    
+    @JavascriptInterface
+    public void pickImage(String callback) {
+        pickImageWithSize(callback, 0, 0, 85);
+    }
+    
+    @JavascriptInterface
+    public void pickImageWithSize(String callback, int width, int height, int quality) {
+        try {
+            cameraCallback = callback;
+            targetWidth = width;
+            targetHeight = height;
+            imageQuality = quality;
+            
+            // إنشاء ملف للكاميرا
+            File photoFile = new File(getAppFolder(), "camera_" + System.currentTimeMillis() + ".jpg");
+            photoFile.getParentFile().mkdirs();
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                cameraImageUri = FileProvider.getUriForFile(context, 
+                    context.getPackageName() + ".fileprovider", photoFile);
+            } else {
+                cameraImageUri = Uri.fromFile(photoFile);
+            }
+            
+            // Intent للاختيار بين الكاميرا والمعرض
+            Intent cameraIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+            cameraIntent.putExtra(MediaStore.EXTRA_OUTPUT, cameraImageUri);
+            cameraIntent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            
+            Intent galleryIntent = new Intent(Intent.ACTION_PICK);
+            galleryIntent.setType("image/*");
+            
+            Intent chooser = Intent.createChooser(galleryIntent, "Select Image");
+            chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, new Intent[]{cameraIntent});
+            
+            ((Activity) context).startActivityForResult(chooser, REQUEST_PICK_IMAGE);
+        } catch (Exception e) {
+            showToast("Pick image error: " + e.getMessage());
+        }
+    }
+    
+    @JavascriptInterface
+    public String getLastImage() {
+        return lastImageBase64 != null ? lastImageBase64 : "";
+    }
+    
+    @JavascriptInterface
+    public String resizeImage(String base64, int maxWidth, int maxHeight) {
+        try {
+            byte[] imageBytes = Base64.decode(base64, Base64.DEFAULT);
+            Bitmap bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.length);
+            Bitmap resized = resizeBitmap(bitmap, maxWidth, maxHeight);
+            return bitmapToBase64(resized, 85);
+        } catch (Exception e) {
+            return "";
+        }
+    }
+    
+    @JavascriptInterface
+    public String rotateImage(String base64, int degrees) {
+        try {
+            byte[] imageBytes = Base64.decode(base64, Base64.DEFAULT);
+            Bitmap bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.length);
+            Matrix matrix = new Matrix();
+            matrix.postRotate(degrees);
+            Bitmap rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+            return bitmapToBase64(rotated, 85);
+        } catch (Exception e) {
+            return "";
+        }
+    }
+    
+    // معالجة نتيجة الكاميرا/المعرض - يُستدعى من MainActivity
+    public static void handleActivityResult(Context context, WebView webView, int requestCode, int resultCode, Intent data) {
+        if (resultCode != Activity.RESULT_OK) {
+            callJsCallback(webView, cameraCallback, "", "cancelled");
+            return;
+        }
+        
+        try {
+            Bitmap bitmap = null;
+            
+            if (requestCode == REQUEST_CAMERA) {
+                // صورة من الكاميرا
+                if (cameraImageUri != null) {
+                    InputStream is = context.getContentResolver().openInputStream(cameraImageUri);
+                    bitmap = BitmapFactory.decodeStream(is);
+                    is.close();
+                }
+            } else if (requestCode == REQUEST_GALLERY || requestCode == REQUEST_PICK_IMAGE) {
+                // صورة من المعرض
+                if (data != null && data.getData() != null) {
+                    InputStream is = context.getContentResolver().openInputStream(data.getData());
+                    bitmap = BitmapFactory.decodeStream(is);
+                    is.close();
+                } else if (cameraImageUri != null) {
+                    // ربما اختار الكاميرا من chooser
+                    InputStream is = context.getContentResolver().openInputStream(cameraImageUri);
+                    bitmap = BitmapFactory.decodeStream(is);
+                    is.close();
+                }
+            }
+            
+            if (bitmap != null) {
+                // تصغير إذا طُلب
+                if (targetWidth > 0 && targetHeight > 0) {
+                    bitmap = resizeBitmap(bitmap, targetWidth, targetHeight);
+                }
+                
+                lastImageBase64 = bitmapToBase64(bitmap, imageQuality);
+                callJsCallback(webView, cameraCallback, lastImageBase64, "success");
+            } else {
+                callJsCallback(webView, cameraCallback, "", "error");
+            }
+        } catch (Exception e) {
+            callJsCallback(webView, cameraCallback, "", "error: " + e.getMessage());
+        }
+    }
+    
+    private static Bitmap resizeBitmap(Bitmap bitmap, int maxWidth, int maxHeight) {
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        
+        float ratio = Math.min((float) maxWidth / width, (float) maxHeight / height);
+        
+        if (ratio >= 1) return bitmap;
+        
+        int newWidth = Math.round(width * ratio);
+        int newHeight = Math.round(height * ratio);
+        
+        return Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true);
+    }
+    
+    private static String bitmapToBase64(Bitmap bitmap, int quality) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        bitmap.compress(Bitmap.CompressFormat.JPEG, quality, baos);
+        byte[] bytes = baos.toByteArray();
+        return Base64.encodeToString(bytes, Base64.NO_WRAP);
+    }
+    
+    private static void callJsCallback(final WebView webView, final String callback, final String data, final String status) {
+        if (webView == null || callback == null || callback.isEmpty()) return;
+        
+        ((Activity) webView.getContext()).runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                String js = String.format("javascript:%s('%s', '%s')", callback, status, data);
+                webView.evaluateJavascript(js, null);
+            }
+        });
+    }
+}

@@ -1,0 +1,104 @@
+package {{PACKAGE}};
+
+import android.Manifest;
+import android.app.Activity;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.os.Bundle;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
+import android.widget.Toast;
+import androidx.annotation.NonNull;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+import com.google.zxing.BarcodeFormat;
+import com.google.zxing.Result;
+import me.dm7.barcodescanner.zxing.ZXingScannerView;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * QR Scanner Activity - {{APP}}
+ * نشاط بسيط لمسح QR Codes باستخدام الكاميرا
+ */
+public class QRScannerActivity extends Activity implements ZXingScannerView.ResultHandler {
+    public static final int REQUEST_QR_SCAN = 300;
+    private static final int CAMERA_PERMISSION_REQUEST = 301;
+    private ZXingScannerView scannerView;
+    
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        
+        // إنشاء Scanner View
+        scannerView = new ZXingScannerView(this);
+        
+        // تعيين الصيغ المدعومة
+        List<BarcodeFormat> formats = new ArrayList<>();
+        formats.add(BarcodeFormat.QR_CODE);
+        formats.add(BarcodeFormat.CODE_128);
+        formats.add(BarcodeFormat.CODE_39);
+        formats.add(BarcodeFormat.EAN_13);
+        formats.add(BarcodeFormat.EAN_8);
+        scannerView.setFormats(formats);
+        
+        // تفعيل الفلاش التلقائي
+        scannerView.setAutoFocus(true);
+        
+        setContentView(scannerView);
+        
+        // التحقق من إذن الكاميرا
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) 
+            != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, 
+                new String[]{Manifest.permission.CAMERA}, 
+                CAMERA_PERMISSION_REQUEST);
+        }
+    }
+    
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) 
+            == PackageManager.PERMISSION_GRANTED) {
+            scannerView.setResultHandler(this);
+            scannerView.startCamera();
+        }
+    }
+    
+    @Override
+    protected void onPause() {
+        super.onPause();
+        scannerView.stopCamera();
+    }
+    
+    @Override
+    public void handleResult(Result result) {
+        // إرجاع النتيجة
+        Intent intent = new Intent();
+        intent.putExtra("SCAN_RESULT", result.getText());
+        intent.putExtra("SCAN_FORMAT", result.getBarcodeFormat().toString());
+        setResult(RESULT_OK, intent);
+        finish();
+    }
+    
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, 
+                                          @NonNull int[] grantResults) {
+        if (requestCode == CAMERA_PERMISSION_REQUEST) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                scannerView.setResultHandler(this);
+                scannerView.startCamera();
+            } else {
+                Toast.makeText(this, "Camera permission required", Toast.LENGTH_SHORT).show();
+                finish();
+            }
+        }
+    }
+    
+    @Override
+    public void onBackPressed() {
+        setResult(RESULT_CANCELED);
+        super.onBackPressed();
+    }
+}

@@ -1,0 +1,1140 @@
+package {{PACKAGE}};
+
+import android.app.Activity;
+import android.os.Handler;
+import android.os.Looper;
+import android.webkit.JavascriptInterface;
+import android.webkit.WebView;
+import android.widget.Toast;
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.Socket;
+import java.net.URI;
+import java.security.MessageDigest;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+import java.util.Random;
+import java.util.Iterator;
+import javax.net.ssl.SSLSocketFactory;
+import org.json.JSONObject;
+import org.json.JSONArray;
+
+/**
+ * WebSocket Client with Channels & Rooms - {{APP}}
+ * 
+ * === Connection ===
+ * AppSocket.connect("wss://example.com/ws", "onSocketEvent");
+ * AppSocket.disconnect();
+ * AppSocket.isConnected();
+ * 
+ * === Basic Messaging ===
+ * AppSocket.send("Hello Server!");
+ * AppSocket.sendJSON('{"type":"chat","message":"Hi"}');
+ * 
+ * === Channel Subscriptions ===
+ * AppSocket.subscribe("notifications", "onNotification");
+ * AppSocket.subscribe("chat/room1", "onChatMessage");
+ * AppSocket.subscribe("chat/*", "onAnyChatMessage");      // Wildcard: أي غرفة chat
+ * AppSocket.subscribe("events/**", "onDeepEvents");       // Deep wildcard
+ * AppSocket.unsubscribe("notifications");
+ * AppSocket.unsubscribeAll();
+ * AppSocket.publish("chat/room1", '{"text":"Hello!"}');
+ * var channels = AppSocket.getSubscriptions();
+ * 
+ * === Rooms ===
+ * AppSocket.joinRoom("game-lobby", '{"username":"Player1","level":5}');
+ * AppSocket.leaveRoom("game-lobby");
+ * AppSocket.leaveAllRooms();
+ * AppSocket.sendToRoom("game-lobby", '{"action":"ready"}');
+ * AppSocket.broadcastToRoom("game-lobby", '{"event":"start"}');  // للجميع ما عداك
+ * var rooms = AppSocket.getJoinedRooms();
+ * var users = AppSocket.getRoomPresence("game-lobby");
+ * AppSocket.onPresenceChange("game-lobby", "onUsersChanged");
+ * 
+ * === Settings ===
+ * AppSocket.setAutoReconnect(true);
+ * AppSocket.setReconnectDelay(3000);
+ * AppSocket.setPingInterval(30000);
+ * 
+ * === Callback Examples ===
+ * function onSocketEvent(event, data) {
+ *     switch(event) {
+ *         case "open": console.log("Connected"); break;
+ *         case "message": console.log("Received: " + data); break;
+ *         case "close": console.log("Disconnected"); break;
+ *         case "error": console.log("Error: " + data); break;
+ *         case "reconnecting": console.log("Reconnecting..."); break;
+ *         case "subscribed": console.log("Subscribed to: " + data); break;
+ *         case "unsubscribed": console.log("Unsubscribed from: " + data); break;
+ *         case "joined": console.log("Joined room: " + data); break;
+ *         case "left": console.log("Left room: " + data); break;
+ *     }
+ * }
+ * 
+ * function onNotification(channel, data) {
+ *     var msg = JSON.parse(data);
+ *     console.log("Notification: " + msg.title);
+ * }
+ * 
+ * function onAnyChatMessage(channel, data) {
+ *     console.log("Message in " + channel + ": " + data);
+ * }
+ * 
+ * function onUsersChanged(room, action, userData) {
+ *     // action: "join", "leave", "update"
+ *     console.log(userData.username + " " + action + "ed " + room);
+ * }
+ */
+public class WebSocketClient {
+    private Activity activity;
+    private WebView webView;
+    private Socket socket;
+    private InputStream inputStream;
+    private OutputStream outputStream;
+    private Thread readerThread;
+    private Handler mainHandler;
+    
+    private String serverUrl;
+    private String callbackFunction;
+    private boolean isConnected = false;
+    private boolean autoReconnect = true;
+    private int reconnectDelay = 3000;
+    private int pingInterval = 30000;
+    private int reconnectAttempts = 0;
+    private int maxReconnectAttempts = 10;
+    
+    private Handler pingHandler;
+    private Runnable pingRunnable;
+    
+    // ==================== CHANNELS & ROOMS DATA ====================
+    
+    // Channel subscriptions: channel -> callback function name
+    private Map<String, String> subscriptions = new HashMap<>();
+    
+    // Wildcard subscriptions: pattern -> callback function name
+    private Map<String, String> wildcardSubscriptions = new HashMap<>();
+    
+    // Joined rooms: room name -> user metadata (JSONObject as string)
+    private Map<String, String> joinedRooms = new HashMap<>();
+    
+    // Room presence: room name -> list of users (JSONArray as string)
+    private Map<String, String> roomPresence = new HashMap<>();
+    
+    // Presence change callbacks: room name -> callback function name
+    private Map<String, String> presenceCallbacks = new HashMap<>();
+    
+    // Channel message routing enabled
+    private boolean channelRoutingEnabled = true;
+
+    public WebSocketClient(Activity activity) {
+        this.activity = activity;
+        this.mainHandler = new Handler(Looper.getMainLooper());
+    }
+
+    public void setWebView(WebView webView) {
+        this.webView = webView;
+    }
+
+    // ==================== CONNECTION ====================
+
+    @JavascriptInterface
+    public void connect(String url, String callback) {
+        this.serverUrl = url;
+        this.callbackFunction = callback;
+        this.reconnectAttempts = 0;
+        
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                doConnect();
+            }
+        }).start();
+    }
+
+    private void doConnect() {
+        try {
+            URI uri = new URI(serverUrl);
+            String host = uri.getHost();
+            int port = uri.getPort();
+            String path = uri.getPath();
+            if (path == null || path.isEmpty()) path = "/";
+            boolean isSecure = serverUrl.startsWith("wss://");
+            
+            if (port == -1) {
+                port = isSecure ? 443 : 80;
+            }
+
+            // إنشاء Socket مع timeout
+            if (isSecure) {
+                socket = SSLSocketFactory.getDefault().createSocket(host, port);
+            } else {
+                socket = new Socket();
+                socket.connect(new java.net.InetSocketAddress(host, port), 10000);
+            }
+            socket.setSoTimeout(30000);
+            
+            inputStream = socket.getInputStream();
+            outputStream = socket.getOutputStream();
+
+            // WebSocket Handshake
+            String key = generateWebSocketKey();
+            String handshake = "GET " + path + " HTTP/1.1\r\n" +
+                    "Host: " + host + "\r\n" +
+                    "Upgrade: websocket\r\n" +
+                    "Connection: Upgrade\r\n" +
+                    "Sec-WebSocket-Key: " + key + "\r\n" +
+                    "Sec-WebSocket-Version: 13\r\n" +
+                    "\r\n";
+            
+            outputStream.write(handshake.getBytes());
+            outputStream.flush();
+
+            // قراءة الرد
+            BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream));
+            String line;
+            boolean upgraded = false;
+            while ((line = reader.readLine()) != null && !line.isEmpty()) {
+                if (line.contains("101")) {
+                    upgraded = true;
+                }
+            }
+
+            if (upgraded) {
+                isConnected = true;
+                reconnectAttempts = 0;
+                
+                // إعادة الاشتراك في القنوات والغرف
+                resubscribeAll();
+                
+                fireEvent("open", "");
+                startPing();
+                startReading();
+            } else {
+                throw new Exception("WebSocket handshake failed");
+            }
+
+        } catch (Exception e) {
+            isConnected = false;
+            fireEvent("error", e.getMessage() != null ? e.getMessage() : "Connection failed");
+            attemptReconnect();
+        }
+    }
+
+    @JavascriptInterface
+    public void disconnect() {
+        autoReconnect = false;
+        closeConnection();
+    }
+
+    private void closeConnection() {
+        try {
+            stopPing();
+            isConnected = false;
+            if (socket != null) {
+                socket.close();
+            }
+            fireEvent("close", "");
+        } catch (Exception e) {}
+    }
+
+    @JavascriptInterface
+    public boolean isConnected() {
+        return isConnected;
+    }
+
+    // ==================== BASIC MESSAGING ====================
+
+    @JavascriptInterface
+    public boolean send(String message) {
+        if (!isConnected) return false;
+        
+        try {
+            byte[] messageBytes = message.getBytes("UTF-8");
+            sendFrame(messageBytes, 0x81); // Text frame
+            return true;
+        } catch (Exception e) {
+            fireEvent("error", "Send failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    @JavascriptInterface
+    public boolean sendJSON(String jsonString) {
+        return send(jsonString);
+    }
+
+    @JavascriptInterface
+    public boolean sendBinary(String base64Data) {
+        if (!isConnected) return false;
+        
+        try {
+            byte[] data = android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT);
+            sendFrame(data, 0x82); // Binary frame
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void sendFrame(byte[] data, int opcode) throws Exception {
+        int length = data.length;
+        byte[] frame;
+        
+        if (length <= 125) {
+            frame = new byte[6 + length];
+            frame[0] = (byte) opcode;
+            frame[1] = (byte) (0x80 | length); // Masked
+        } else if (length <= 65535) {
+            frame = new byte[8 + length];
+            frame[0] = (byte) opcode;
+            frame[1] = (byte) (0x80 | 126);
+            frame[2] = (byte) ((length >> 8) & 0xFF);
+            frame[3] = (byte) (length & 0xFF);
+        } else {
+            frame = new byte[14 + length];
+            frame[0] = (byte) opcode;
+            frame[1] = (byte) (0x80 | 127);
+            for (int i = 2; i < 10; i++) {
+                frame[i] = (byte) ((length >> ((9 - i) * 8)) & 0xFF);
+            }
+        }
+
+        // Masking key
+        byte[] mask = new byte[4];
+        new Random().nextBytes(mask);
+        int maskOffset = frame.length - length - 4;
+        System.arraycopy(mask, 0, frame, maskOffset, 4);
+
+        // Masked data
+        for (int i = 0; i < length; i++) {
+            frame[maskOffset + 4 + i] = (byte) (data[i] ^ mask[i % 4]);
+        }
+
+        synchronized (outputStream) {
+            outputStream.write(frame);
+            outputStream.flush();
+        }
+    }
+
+
+    // ==================== CHANNEL SUBSCRIPTIONS ====================
+
+    /**
+     * Subscribe to a channel
+     * @param channel Channel name (e.g., "notifications", "chat/room1", "events/*")
+     * @param callback JavaScript function name to call when message received
+     */
+    @JavascriptInterface
+    public boolean subscribe(String channel, String callback) {
+        if (channel == null || channel.isEmpty() || callback == null) return false;
+        
+        // تحديد نوع الاشتراك (عادي أو wildcard)
+        if (channel.contains("*")) {
+            wildcardSubscriptions.put(channel, callback);
+        } else {
+            subscriptions.put(channel, callback);
+        }
+        
+        // إرسال طلب الاشتراك للسيرفر
+        if (isConnected) {
+            sendSubscribeRequest(channel);
+        }
+        
+        fireEvent("subscribed", channel);
+        return true;
+    }
+
+    /**
+     * Unsubscribe from a channel
+     */
+    @JavascriptInterface
+    public boolean unsubscribe(String channel) {
+        if (channel == null || channel.isEmpty()) return false;
+        
+        boolean removed = false;
+        if (channel.contains("*")) {
+            removed = wildcardSubscriptions.remove(channel) != null;
+        } else {
+            removed = subscriptions.remove(channel) != null;
+        }
+        
+        if (removed && isConnected) {
+            sendUnsubscribeRequest(channel);
+            fireEvent("unsubscribed", channel);
+        }
+        
+        return removed;
+    }
+
+    /**
+     * Unsubscribe from all channels
+     */
+    @JavascriptInterface
+    public void unsubscribeAll() {
+        Set<String> allChannels = new HashSet<>();
+        allChannels.addAll(subscriptions.keySet());
+        allChannels.addAll(wildcardSubscriptions.keySet());
+        
+        for (String channel : allChannels) {
+            if (isConnected) {
+                sendUnsubscribeRequest(channel);
+            }
+        }
+        
+        subscriptions.clear();
+        wildcardSubscriptions.clear();
+        fireEvent("unsubscribed", "*");
+    }
+
+    /**
+     * Publish a message to a channel
+     */
+    @JavascriptInterface
+    public boolean publish(String channel, String data) {
+        if (!isConnected || channel == null) return false;
+        
+        try {
+            JSONObject msg = new JSONObject();
+            msg.put("action", "publish");
+            msg.put("channel", channel);
+            
+            // محاولة parse البيانات كـ JSON، وإلا إرسالها كنص
+            try {
+                msg.put("data", new JSONObject(data));
+            } catch (Exception e) {
+                msg.put("data", data);
+            }
+            
+            return send(msg.toString());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Get list of subscribed channels
+     */
+    @JavascriptInterface
+    public String getSubscriptions() {
+        try {
+            JSONArray arr = new JSONArray();
+            for (String channel : subscriptions.keySet()) {
+                JSONObject obj = new JSONObject();
+                obj.put("channel", channel);
+                obj.put("callback", subscriptions.get(channel));
+                obj.put("type", "exact");
+                arr.put(obj);
+            }
+            for (String pattern : wildcardSubscriptions.keySet()) {
+                JSONObject obj = new JSONObject();
+                obj.put("channel", pattern);
+                obj.put("callback", wildcardSubscriptions.get(pattern));
+                obj.put("type", "wildcard");
+                arr.put(obj);
+            }
+            return arr.toString();
+        } catch (Exception e) {
+            return "[]";
+        }
+    }
+
+    /**
+     * Check if subscribed to a channel
+     */
+    @JavascriptInterface
+    public boolean isSubscribed(String channel) {
+        return subscriptions.containsKey(channel) || wildcardSubscriptions.containsKey(channel);
+    }
+
+    /**
+     * Get subscription count
+     */
+    @JavascriptInterface
+    public int getSubscriptionCount() {
+        return subscriptions.size() + wildcardSubscriptions.size();
+    }
+
+    // إرسال طلب اشتراك للسيرفر
+    private void sendSubscribeRequest(String channel) {
+        try {
+            JSONObject msg = new JSONObject();
+            msg.put("action", "subscribe");
+            msg.put("channel", channel);
+            send(msg.toString());
+        } catch (Exception e) {}
+    }
+
+    // إرسال طلب إلغاء اشتراك للسيرفر
+    private void sendUnsubscribeRequest(String channel) {
+        try {
+            JSONObject msg = new JSONObject();
+            msg.put("action", "unsubscribe");
+            msg.put("channel", channel);
+            send(msg.toString());
+        } catch (Exception e) {}
+    }
+
+    // ==================== ROOMS ====================
+
+    /**
+     * Join a room with optional metadata
+     * @param room Room name
+     * @param metadata JSON string with user data (e.g., '{"username":"Ahmed","avatar":"url"}')
+     */
+    @JavascriptInterface
+    public boolean joinRoom(String room, String metadata) {
+        if (room == null || room.isEmpty()) return false;
+        
+        // حفظ بيانات الغرفة
+        joinedRooms.put(room, metadata != null ? metadata : "{}");
+        
+        // إرسال طلب الانضمام للسيرفر
+        if (isConnected) {
+            sendJoinRoomRequest(room, metadata);
+        }
+        
+        fireEvent("joined", room);
+        return true;
+    }
+
+    /**
+     * Join a room without metadata
+     */
+    @JavascriptInterface
+    public boolean joinRoom(String room) {
+        return joinRoom(room, null);
+    }
+
+    /**
+     * Leave a room
+     */
+    @JavascriptInterface
+    public boolean leaveRoom(String room) {
+        if (room == null || !joinedRooms.containsKey(room)) return false;
+        
+        joinedRooms.remove(room);
+        roomPresence.remove(room);
+        presenceCallbacks.remove(room);
+        
+        if (isConnected) {
+            sendLeaveRoomRequest(room);
+        }
+        
+        fireEvent("left", room);
+        return true;
+    }
+
+    /**
+     * Leave all rooms
+     */
+    @JavascriptInterface
+    public void leaveAllRooms() {
+        Set<String> rooms = new HashSet<>(joinedRooms.keySet());
+        for (String room : rooms) {
+            leaveRoom(room);
+        }
+    }
+
+    /**
+     * Send a message to a specific room
+     */
+    @JavascriptInterface
+    public boolean sendToRoom(String room, String data) {
+        if (!isConnected || room == null || !joinedRooms.containsKey(room)) return false;
+        
+        try {
+            JSONObject msg = new JSONObject();
+            msg.put("action", "room_message");
+            msg.put("room", room);
+            
+            try {
+                msg.put("data", new JSONObject(data));
+            } catch (Exception e) {
+                msg.put("data", data);
+            }
+            
+            return send(msg.toString());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Broadcast to all users in room except yourself
+     */
+    @JavascriptInterface
+    public boolean broadcastToRoom(String room, String data) {
+        if (!isConnected || room == null || !joinedRooms.containsKey(room)) return false;
+        
+        try {
+            JSONObject msg = new JSONObject();
+            msg.put("action", "room_broadcast");
+            msg.put("room", room);
+            msg.put("excludeSelf", true);
+            
+            try {
+                msg.put("data", new JSONObject(data));
+            } catch (Exception e) {
+                msg.put("data", data);
+            }
+            
+            return send(msg.toString());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Get list of joined rooms
+     */
+    @JavascriptInterface
+    public String getJoinedRooms() {
+        try {
+            JSONArray arr = new JSONArray();
+            for (Map.Entry<String, String> entry : joinedRooms.entrySet()) {
+                JSONObject obj = new JSONObject();
+                obj.put("room", entry.getKey());
+                try {
+                    obj.put("metadata", new JSONObject(entry.getValue()));
+                } catch (Exception e) {
+                    obj.put("metadata", new JSONObject());
+                }
+                arr.put(obj);
+            }
+            return arr.toString();
+        } catch (Exception e) {
+            return "[]";
+        }
+    }
+
+    /**
+     * Check if joined a room
+     */
+    @JavascriptInterface
+    public boolean isInRoom(String room) {
+        return joinedRooms.containsKey(room);
+    }
+
+    /**
+     * Get room count
+     */
+    @JavascriptInterface
+    public int getRoomCount() {
+        return joinedRooms.size();
+    }
+
+    /**
+     * Update your metadata in a room
+     */
+    @JavascriptInterface
+    public boolean updateRoomMetadata(String room, String metadata) {
+        if (room == null || !joinedRooms.containsKey(room)) return false;
+        
+        joinedRooms.put(room, metadata != null ? metadata : "{}");
+        
+        if (isConnected) {
+            try {
+                JSONObject msg = new JSONObject();
+                msg.put("action", "room_update");
+                msg.put("room", room);
+                msg.put("metadata", new JSONObject(metadata));
+                send(msg.toString());
+            } catch (Exception e) {}
+        }
+        
+        return true;
+    }
+
+    // إرسال طلب انضمام للسيرفر
+    private void sendJoinRoomRequest(String room, String metadata) {
+        try {
+            JSONObject msg = new JSONObject();
+            msg.put("action", "join");
+            msg.put("room", room);
+            if (metadata != null && !metadata.isEmpty()) {
+                msg.put("metadata", new JSONObject(metadata));
+            }
+            send(msg.toString());
+        } catch (Exception e) {}
+    }
+
+    // إرسال طلب مغادرة للسيرفر
+    private void sendLeaveRoomRequest(String room) {
+        try {
+            JSONObject msg = new JSONObject();
+            msg.put("action", "leave");
+            msg.put("room", room);
+            send(msg.toString());
+        } catch (Exception e) {}
+    }
+
+
+    // ==================== PRESENCE ====================
+
+    /**
+     * Get users in a room
+     */
+    @JavascriptInterface
+    public String getRoomPresence(String room) {
+        if (room == null || !roomPresence.containsKey(room)) {
+            return "[]";
+        }
+        return roomPresence.get(room);
+    }
+
+    /**
+     * Set callback for presence changes in a room
+     */
+    @JavascriptInterface
+    public void onPresenceChange(String room, String callback) {
+        if (room != null && callback != null) {
+            presenceCallbacks.put(room, callback);
+        }
+    }
+
+    /**
+     * Remove presence callback for a room
+     */
+    @JavascriptInterface
+    public void offPresenceChange(String room) {
+        if (room != null) {
+            presenceCallbacks.remove(room);
+        }
+    }
+
+    /**
+     * Request presence list from server
+     */
+    @JavascriptInterface
+    public void requestPresence(String room) {
+        if (!isConnected || room == null) return;
+        
+        try {
+            JSONObject msg = new JSONObject();
+            msg.put("action", "get_presence");
+            msg.put("room", room);
+            send(msg.toString());
+        } catch (Exception e) {}
+    }
+
+    /**
+     * Get presence count in a room
+     */
+    @JavascriptInterface
+    public int getPresenceCount(String room) {
+        try {
+            String presence = roomPresence.get(room);
+            if (presence != null) {
+                return new JSONArray(presence).length();
+            }
+        } catch (Exception e) {}
+        return 0;
+    }
+
+    // تحديث presence من رسالة السيرفر
+    private void updatePresence(String room, String users) {
+        roomPresence.put(room, users);
+    }
+
+    // إطلاق callback عند تغيير presence
+    private void firePresenceChange(String room, String action, String userData) {
+        String callback = presenceCallbacks.get(room);
+        if (callback != null && webView != null) {
+            final String js = "javascript:" + callback + "('" + escapeJS(room) + "', '" + 
+                             escapeJS(action) + "', '" + escapeJS(userData) + "')";
+            mainHandler.post(new Runnable() {
+                @Override
+                public void run() {
+                    webView.evaluateJavascript(js, null);
+                }
+            });
+        }
+    }
+
+    // ==================== MESSAGE ROUTING ====================
+
+    /**
+     * Enable/disable automatic channel routing
+     */
+    @JavascriptInterface
+    public void setChannelRouting(boolean enabled) {
+        this.channelRoutingEnabled = enabled;
+    }
+
+    // توجيه الرسائل للقنوات المناسبة
+    private void routeMessage(String rawMessage) {
+        if (!channelRoutingEnabled) {
+            fireEvent("message", rawMessage);
+            return;
+        }
+        
+        try {
+            JSONObject msg = new JSONObject(rawMessage);
+            String type = msg.optString("type", "");
+            
+            // رسالة قناة
+            if ("channel_message".equals(type) || msg.has("channel")) {
+                String channel = msg.optString("channel", "");
+                String data = msg.has("data") ? msg.get("data").toString() : "";
+                
+                // بحث في الاشتراكات المباشرة
+                if (subscriptions.containsKey(channel)) {
+                    fireChannelCallback(subscriptions.get(channel), channel, data);
+                    return;
+                }
+                
+                // بحث في Wildcard subscriptions
+                for (Map.Entry<String, String> entry : wildcardSubscriptions.entrySet()) {
+                    if (matchWildcard(entry.getKey(), channel)) {
+                        fireChannelCallback(entry.getValue(), channel, data);
+                        return;
+                    }
+                }
+                
+                // لم يتم العثور على اشتراك، إرسال كرسالة عادية
+                fireEvent("message", rawMessage);
+            }
+            // رسالة غرفة
+            else if ("room_message".equals(type) || msg.has("room")) {
+                String room = msg.optString("room", "");
+                String data = msg.has("data") ? msg.get("data").toString() : "";
+                
+                // إذا كان هناك اشتراك في الغرفة كقناة
+                String roomChannel = "room/" + room;
+                if (subscriptions.containsKey(roomChannel)) {
+                    fireChannelCallback(subscriptions.get(roomChannel), roomChannel, data);
+                } else {
+                    fireEvent("room_message", rawMessage);
+                }
+            }
+            // تحديث presence
+            else if ("presence".equals(type)) {
+                String room = msg.optString("room", "");
+                String action = msg.optString("action", "update"); // join, leave, update
+                
+                if (msg.has("users")) {
+                    updatePresence(room, msg.getJSONArray("users").toString());
+                }
+                
+                if (msg.has("user")) {
+                    firePresenceChange(room, action, msg.getJSONObject("user").toString());
+                }
+            }
+            // تأكيد اشتراك
+            else if ("subscribed".equals(type)) {
+                fireEvent("subscribed", msg.optString("channel", ""));
+            }
+            // تأكيد انضمام
+            else if ("joined".equals(type)) {
+                String room = msg.optString("room", "");
+                if (msg.has("users")) {
+                    updatePresence(room, msg.getJSONArray("users").toString());
+                }
+                fireEvent("joined", room);
+            }
+            // رسالة عادية
+            else {
+                fireEvent("message", rawMessage);
+            }
+            
+        } catch (Exception e) {
+            // ليست JSON، إرسال كرسالة عادية
+            fireEvent("message", rawMessage);
+        }
+    }
+
+    // مطابقة Wildcard patterns
+    private boolean matchWildcard(String pattern, String channel) {
+        if (pattern == null || channel == null) return false;
+        
+        // ** يطابق أي عدد من المستويات
+        if (pattern.endsWith("/**")) {
+            String prefix = pattern.substring(0, pattern.length() - 3);
+            return channel.equals(prefix) || channel.startsWith(prefix + "/");
+        }
+        
+        // * يطابق مستوى واحد فقط
+        if (pattern.endsWith("/*")) {
+            String prefix = pattern.substring(0, pattern.length() - 2);
+            if (!channel.startsWith(prefix + "/")) return false;
+            String remainder = channel.substring(prefix.length() + 1);
+            return !remainder.contains("/");
+        }
+        
+        // * في المنتصف
+        if (pattern.contains("*")) {
+            String regex = pattern.replace(".", "\\.")
+                                  .replace("**", ".*")
+                                  .replace("*", "[^/]*");
+            return channel.matches(regex);
+        }
+        
+        return pattern.equals(channel);
+    }
+
+    // إطلاق callback للقناة
+    private void fireChannelCallback(final String callback, final String channel, final String data) {
+        if (webView == null || callback == null) return;
+        
+        mainHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                String js = "javascript:" + callback + "('" + escapeJS(channel) + "', '" + escapeJS(data) + "')";
+                webView.evaluateJavascript(js, null);
+            }
+        });
+    }
+
+    // ==================== RESUBSCRIBE ON RECONNECT ====================
+
+    private void resubscribeAll() {
+        // إعادة الاشتراك في القنوات
+        for (String channel : subscriptions.keySet()) {
+            sendSubscribeRequest(channel);
+        }
+        for (String pattern : wildcardSubscriptions.keySet()) {
+            sendSubscribeRequest(pattern);
+        }
+        
+        // إعادة الانضمام للغرف
+        for (Map.Entry<String, String> entry : joinedRooms.entrySet()) {
+            sendJoinRoomRequest(entry.getKey(), entry.getValue());
+        }
+    }
+
+    // ==================== READING ====================
+
+    private void startReading() {
+        readerThread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    while (isConnected && socket != null && !socket.isClosed()) {
+                        readFrame();
+                    }
+                } catch (Exception e) {
+                    if (isConnected) {
+                        isConnected = false;
+                        fireEvent("error", e.getMessage() != null ? e.getMessage() : "Read error");
+                        attemptReconnect();
+                    }
+                }
+            }
+        });
+        readerThread.start();
+    }
+
+    private void readFrame() throws Exception {
+        int firstByte = inputStream.read();
+        if (firstByte == -1) throw new Exception("Connection closed");
+        
+        int opcode = firstByte & 0x0F;
+        int secondByte = inputStream.read();
+        int length = secondByte & 0x7F;
+
+        if (length == 126) {
+            length = (inputStream.read() << 8) | inputStream.read();
+        } else if (length == 127) {
+            // Skip 4 bytes, read last 4
+            for (int i = 0; i < 4; i++) inputStream.read();
+            length = 0;
+            for (int i = 0; i < 4; i++) {
+                length = (length << 8) | inputStream.read();
+            }
+        }
+
+        byte[] data = new byte[length];
+        int read = 0;
+        while (read < length) {
+            int r = inputStream.read(data, read, length - read);
+            if (r == -1) throw new Exception("Connection closed");
+            read += r;
+        }
+
+        switch (opcode) {
+            case 0x01: // Text
+                String message = new String(data, "UTF-8");
+                routeMessage(message); // استخدام router بدلاً من fireEvent مباشرة
+                break;
+            case 0x02: // Binary
+                String base64 = android.util.Base64.encodeToString(data, android.util.Base64.NO_WRAP);
+                fireEvent("binary", base64);
+                break;
+            case 0x08: // Close
+                closeConnection();
+                break;
+            case 0x09: // Ping
+                sendFrame(data, 0x8A); // Pong
+                break;
+            case 0x0A: // Pong
+                // Ignore
+                break;
+        }
+    }
+
+
+    // ==================== AUTO-RECONNECT ====================
+
+    @JavascriptInterface
+    public void setAutoReconnect(boolean enabled) {
+        this.autoReconnect = enabled;
+    }
+
+    @JavascriptInterface
+    public void setReconnectDelay(int milliseconds) {
+        this.reconnectDelay = milliseconds;
+    }
+
+    @JavascriptInterface
+    public void setMaxReconnectAttempts(int attempts) {
+        this.maxReconnectAttempts = attempts;
+    }
+
+    private void attemptReconnect() {
+        if (!autoReconnect || reconnectAttempts >= maxReconnectAttempts) {
+            fireEvent("close", "Max reconnect attempts reached");
+            return;
+        }
+
+        reconnectAttempts++;
+        fireEvent("reconnecting", String.valueOf(reconnectAttempts));
+
+        mainHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        doConnect();
+                    }
+                }).start();
+            }
+        }, reconnectDelay * reconnectAttempts);
+    }
+
+    // ==================== PING/PONG ====================
+
+    @JavascriptInterface
+    public void setPingInterval(int milliseconds) {
+        this.pingInterval = milliseconds;
+        if (isConnected) {
+            stopPing();
+            startPing();
+        }
+    }
+
+    private void startPing() {
+        if (pingInterval <= 0) return;
+        
+        pingHandler = new Handler(Looper.getMainLooper());
+        pingRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (isConnected) {
+                    try {
+                        sendFrame(new byte[0], 0x89); // Ping
+                    } catch (Exception e) {}
+                    pingHandler.postDelayed(this, pingInterval);
+                }
+            }
+        };
+        pingHandler.postDelayed(pingRunnable, pingInterval);
+    }
+
+    private void stopPing() {
+        if (pingHandler != null && pingRunnable != null) {
+            pingHandler.removeCallbacks(pingRunnable);
+        }
+    }
+
+    // ==================== HELPERS ====================
+
+    private String generateWebSocketKey() {
+        byte[] bytes = new byte[16];
+        new Random().nextBytes(bytes);
+        return android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP);
+    }
+
+    private String escapeJS(String str) {
+        if (str == null) return "";
+        return str.replace("\\", "\\\\")
+                  .replace("'", "\\'")
+                  .replace("\"", "\\\"")
+                  .replace("\n", "\\n")
+                  .replace("\r", "\\r")
+                  .replace("\t", "\\t");
+    }
+
+    private void fireEvent(final String event, final String data) {
+        if (webView == null || callbackFunction == null) return;
+        
+        mainHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                String js = "javascript:" + callbackFunction + "('" + escapeJS(event) + "', '" + escapeJS(data) + "')";
+                webView.evaluateJavascript(js, null);
+            }
+        });
+    }
+
+    @JavascriptInterface
+    public String getState() {
+        if (isConnected) return "connected";
+        if (reconnectAttempts > 0) return "reconnecting";
+        return "disconnected";
+    }
+
+    @JavascriptInterface
+    public int getReconnectAttempts() {
+        return reconnectAttempts;
+    }
+
+    // ==================== STATISTICS ====================
+
+    /**
+     * Get connection statistics
+     */
+    @JavascriptInterface
+    public String getStats() {
+        try {
+            JSONObject stats = new JSONObject();
+            stats.put("connected", isConnected);
+            stats.put("reconnectAttempts", reconnectAttempts);
+            stats.put("subscriptionCount", subscriptions.size() + wildcardSubscriptions.size());
+            stats.put("roomCount", joinedRooms.size());
+            stats.put("serverUrl", serverUrl != null ? serverUrl : "");
+            return stats.toString();
+        } catch (Exception e) {
+            return "{}";
+        }
+    }
+
+    // ==================== CLEANUP ====================
+
+    /**
+     * Clean up all resources
+     */
+    public void destroy() {
+        autoReconnect = false;
+        closeConnection();
+        subscriptions.clear();
+        wildcardSubscriptions.clear();
+        joinedRooms.clear();
+        roomPresence.clear();
+        presenceCallbacks.clear();
+    }
+
+    /**
+     * Reset all state (keeps connection)
+     */
+    @JavascriptInterface
+    public void reset() {
+        unsubscribeAll();
+        leaveAllRooms();
+        presenceCallbacks.clear();
+    }
+}

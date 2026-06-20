@@ -1,0 +1,561 @@
+package {{PACKAGE}};
+
+import android.content.Context;
+import android.database.Cursor;
+import android.database.sqlite.SQLiteDatabase;
+import android.database.sqlite.SQLiteOpenHelper;
+import android.webkit.JavascriptInterface;
+import android.widget.Toast;
+import android.util.Base64;
+import org.json.JSONArray;
+import org.json.JSONObject;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * SQLite Database Bridge - {{APP}}
+ * 
+ * === Table Operations ===
+ * AppDB.createTable("users", "id INTEGER PRIMARY KEY, name TEXT, email TEXT, age INTEGER");
+ * AppDB.dropTable("users");
+ * AppDB.tableExists("users");
+ * AppDB.getTables();
+ * 
+ * === CRUD Operations ===
+ * AppDB.insert("users", '{"name":"Ahmed","email":"a@b.com","age":25}');
+ * AppDB.update("users", '{"name":"Ali"}', "id = 1");
+ * AppDB.delete("users", "id = 1");
+ * AppDB.query("users", "*", "age > 20", "name ASC", "10");
+ * AppDB.queryAll("users");
+ * AppDB.getById("users", 1);
+ * AppDB.count("users", "age > 20");
+ * 
+ * === Raw SQL ===
+ * AppDB.execSQL("CREATE INDEX idx_name ON users(name)");
+ * AppDB.rawQuery("SELECT * FROM users WHERE age > ?", '["20"]');
+ * 
+ * === Sync & Backup ===
+ * AppDB.exportToJSON("users");
+ * AppDB.importFromJSON("users", jsonData);
+ * AppDB.syncToServer("users", "https://api.example.com/sync");
+ * AppDB.backup("backup.db");
+ * AppDB.restore("backup.db");
+ */
+public class DatabaseHelper extends SQLiteOpenHelper {
+    private static final String DATABASE_NAME = "{{APP}}.db";
+    private static final int DATABASE_VERSION = 1;
+    private Context context;
+    private SQLiteDatabase db;
+
+    public DatabaseHelper(Context context) {
+        super(context, DATABASE_NAME, null, DATABASE_VERSION);
+        this.context = context;
+        this.db = getWritableDatabase();
+    }
+
+    @Override
+    public void onCreate(SQLiteDatabase db) {
+        // يمكن إنشاء جداول افتراضية هنا
+    }
+
+    @Override
+    public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+        // معالجة تحديث قاعدة البيانات
+    }
+
+    // ==================== TABLE OPERATIONS ====================
+
+    @JavascriptInterface
+    public boolean createTable(String tableName, String columns) {
+        try {
+            String sql = "CREATE TABLE IF NOT EXISTS " + tableName + " (" + columns + ")";
+            db.execSQL(sql);
+            return true;
+        } catch (Exception e) {
+            showToast("Create table failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    @JavascriptInterface
+    public boolean dropTable(String tableName) {
+        try {
+            db.execSQL("DROP TABLE IF EXISTS " + tableName);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    @JavascriptInterface
+    public boolean tableExists(String tableName) {
+        try {
+            Cursor cursor = db.rawQuery(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                new String[]{tableName}
+            );
+            boolean exists = cursor.getCount() > 0;
+            cursor.close();
+            return exists;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    @JavascriptInterface
+    public String getTables() {
+        try {
+            Cursor cursor = db.rawQuery(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'android_%'",
+                null
+            );
+            JSONArray tables = new JSONArray();
+            while (cursor.moveToNext()) {
+                tables.put(cursor.getString(0));
+            }
+            cursor.close();
+            return tables.toString();
+        } catch (Exception e) {
+            return "[]";
+        }
+    }
+
+    @JavascriptInterface
+    public String getTableInfo(String tableName) {
+        try {
+            Cursor cursor = db.rawQuery("PRAGMA table_info(" + tableName + ")", null);
+            JSONArray columns = new JSONArray();
+            while (cursor.moveToNext()) {
+                JSONObject col = new JSONObject();
+                col.put("cid", cursor.getInt(0));
+                col.put("name", cursor.getString(1));
+                col.put("type", cursor.getString(2));
+                col.put("notnull", cursor.getInt(3) == 1);
+                col.put("pk", cursor.getInt(5) == 1);
+                columns.put(col);
+            }
+            cursor.close();
+            return columns.toString();
+        } catch (Exception e) {
+            return "[]";
+        }
+    }
+
+    // ==================== CRUD OPERATIONS ====================
+
+    @JavascriptInterface
+    public long insert(String tableName, String jsonData) {
+        try {
+            JSONObject data = new JSONObject(jsonData);
+            StringBuilder columns = new StringBuilder();
+            StringBuilder values = new StringBuilder();
+            List<String> valueList = new ArrayList<>();
+
+            java.util.Iterator<String> keys = data.keys();
+            boolean first = true;
+            while (keys.hasNext()) {
+                String key = keys.next();
+                if (!first) {
+                    columns.append(", ");
+                    values.append(", ");
+                }
+                columns.append(key);
+                values.append("?");
+                valueList.add(data.get(key).toString());
+                first = false;
+            }
+
+            String sql = "INSERT INTO " + tableName + " (" + columns + ") VALUES (" + values + ")";
+            db.execSQL(sql, valueList.toArray());
+            
+            // الحصول على آخر ID
+            Cursor cursor = db.rawQuery("SELECT last_insert_rowid()", null);
+            long id = -1;
+            if (cursor.moveToFirst()) {
+                id = cursor.getLong(0);
+            }
+            cursor.close();
+            return id;
+        } catch (Exception e) {
+            showToast("Insert failed: " + e.getMessage());
+            return -1;
+        }
+    }
+
+    @JavascriptInterface
+    public int update(String tableName, String jsonData, String where) {
+        try {
+            JSONObject data = new JSONObject(jsonData);
+            StringBuilder setClause = new StringBuilder();
+            List<String> valueList = new ArrayList<>();
+
+            java.util.Iterator<String> keys = data.keys();
+            boolean first = true;
+            while (keys.hasNext()) {
+                String key = keys.next();
+                if (!first) setClause.append(", ");
+                setClause.append(key).append(" = ?");
+                valueList.add(data.get(key).toString());
+                first = false;
+            }
+
+            String sql = "UPDATE " + tableName + " SET " + setClause;
+            if (where != null && !where.isEmpty()) {
+                sql += " WHERE " + where;
+            }
+            
+            db.execSQL(sql, valueList.toArray());
+            return getChangedRows();
+        } catch (Exception e) {
+            showToast("Update failed: " + e.getMessage());
+            return 0;
+        }
+    }
+
+    @JavascriptInterface
+    public int delete(String tableName, String where) {
+        try {
+            String sql = "DELETE FROM " + tableName;
+            if (where != null && !where.isEmpty()) {
+                sql += " WHERE " + where;
+            }
+            db.execSQL(sql);
+            return getChangedRows();
+        } catch (Exception e) {
+            showToast("Delete failed: " + e.getMessage());
+            return 0;
+        }
+    }
+
+    @JavascriptInterface
+    public String query(String tableName, String columns, String where, String orderBy, String limit) {
+        try {
+            String sql = "SELECT " + (columns != null ? columns : "*") + " FROM " + tableName;
+            if (where != null && !where.isEmpty()) sql += " WHERE " + where;
+            if (orderBy != null && !orderBy.isEmpty()) sql += " ORDER BY " + orderBy;
+            if (limit != null && !limit.isEmpty()) sql += " LIMIT " + limit;
+            
+            return cursorToJSON(db.rawQuery(sql, null));
+        } catch (Exception e) {
+            return "[]";
+        }
+    }
+
+    @JavascriptInterface
+    public String queryAll(String tableName) {
+        return query(tableName, "*", null, null, null);
+    }
+
+    @JavascriptInterface
+    public String getById(String tableName, long id) {
+        try {
+            Cursor cursor = db.rawQuery("SELECT * FROM " + tableName + " WHERE id = ?", 
+                new String[]{String.valueOf(id)});
+            String result = cursorToJSON(cursor);
+            JSONArray arr = new JSONArray(result);
+            if (arr.length() > 0) {
+                return arr.getJSONObject(0).toString();
+            }
+            return "{}";
+        } catch (Exception e) {
+            return "{}";
+        }
+    }
+
+    @JavascriptInterface
+    public int count(String tableName, String where) {
+        try {
+            String sql = "SELECT COUNT(*) FROM " + tableName;
+            if (where != null && !where.isEmpty()) sql += " WHERE " + where;
+            Cursor cursor = db.rawQuery(sql, null);
+            int count = 0;
+            if (cursor.moveToFirst()) {
+                count = cursor.getInt(0);
+            }
+            cursor.close();
+            return count;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    // ==================== RAW SQL ====================
+
+    @JavascriptInterface
+    public boolean execSQL(String sql) {
+        try {
+            db.execSQL(sql);
+            return true;
+        } catch (Exception e) {
+            showToast("SQL Error: " + e.getMessage());
+            return false;
+        }
+    }
+
+    @JavascriptInterface
+    public String rawQuery(String sql, String paramsJson) {
+        try {
+            String[] params = null;
+            if (paramsJson != null && !paramsJson.isEmpty()) {
+                JSONArray arr = new JSONArray(paramsJson);
+                params = new String[arr.length()];
+                for (int i = 0; i < arr.length(); i++) {
+                    params[i] = arr.getString(i);
+                }
+            }
+            return cursorToJSON(db.rawQuery(sql, params));
+        } catch (Exception e) {
+            return "[]";
+        }
+    }
+
+    // ==================== EXPORT & IMPORT ====================
+
+    @JavascriptInterface
+    public String exportToJSON(String tableName) {
+        try {
+            JSONObject result = new JSONObject();
+            result.put("table", tableName);
+            result.put("exported_at", System.currentTimeMillis());
+            result.put("data", new JSONArray(queryAll(tableName)));
+            return result.toString();
+        } catch (Exception e) {
+            return "{}";
+        }
+    }
+
+    @JavascriptInterface
+    public int importFromJSON(String tableName, String jsonData) {
+        try {
+            JSONObject json = new JSONObject(jsonData);
+            JSONArray data = json.getJSONArray("data");
+            int imported = 0;
+            
+            db.beginTransaction();
+            try {
+                for (int i = 0; i < data.length(); i++) {
+                    JSONObject row = data.getJSONObject(i);
+                    row.remove("id"); // إزالة ID للسماح بإنشاء جديد
+                    if (insert(tableName, row.toString()) > 0) {
+                        imported++;
+                    }
+                }
+                db.setTransactionSuccessful();
+            } finally {
+                db.endTransaction();
+            }
+            
+            showToast("Imported " + imported + " rows");
+            return imported;
+        } catch (Exception e) {
+            showToast("Import failed: " + e.getMessage());
+            return 0;
+        }
+    }
+
+    // ==================== SYNC ====================
+
+    @JavascriptInterface
+    public void syncToServer(final String tableName, final String serverUrl) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    String jsonData = exportToJSON(tableName);
+                    
+                    URL url = new URL(serverUrl);
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setRequestMethod("POST");
+                    conn.setRequestProperty("Content-Type", "application/json");
+                    conn.setDoOutput(true);
+                    
+                    OutputStream os = conn.getOutputStream();
+                    os.write(jsonData.getBytes("UTF-8"));
+                    os.close();
+                    
+                    int responseCode = conn.getResponseCode();
+                    if (responseCode == 200) {
+                        showToastOnUI("Sync successful");
+                    } else {
+                        showToastOnUI("Sync failed: " + responseCode);
+                    }
+                    conn.disconnect();
+                } catch (Exception e) {
+                    showToastOnUI("Sync error: " + e.getMessage());
+                }
+            }
+        }).start();
+    }
+
+    @JavascriptInterface
+    public void syncFromServer(final String tableName, final String serverUrl, final boolean clearFirst) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    URL url = new URL(serverUrl);
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setRequestMethod("GET");
+                    
+                    if (conn.getResponseCode() == 200) {
+                        java.io.BufferedReader reader = new java.io.BufferedReader(
+                            new java.io.InputStreamReader(conn.getInputStream()));
+                        StringBuilder response = new StringBuilder();
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                            response.append(line);
+                        }
+                        reader.close();
+                        
+                        if (clearFirst) {
+                            delete(tableName, null);
+                        }
+                        
+                        int imported = importFromJSON(tableName, response.toString());
+                        showToastOnUI("Synced " + imported + " rows");
+                    }
+                    conn.disconnect();
+                } catch (Exception e) {
+                    showToastOnUI("Sync error: " + e.getMessage());
+                }
+            }
+        }).start();
+    }
+
+    // ==================== BACKUP & RESTORE ====================
+
+    @JavascriptInterface
+    public boolean backup(String filename) {
+        try {
+            File dbFile = context.getDatabasePath(DATABASE_NAME);
+            File backupFile = new File(context.getExternalFilesDir(null), filename);
+            
+            FileInputStream fis = new FileInputStream(dbFile);
+            FileOutputStream fos = new FileOutputStream(backupFile);
+            
+            byte[] buffer = new byte[4096];
+            int length;
+            while ((length = fis.read(buffer)) > 0) {
+                fos.write(buffer, 0, length);
+            }
+            
+            fos.close();
+            fis.close();
+            
+            showToast("Backup saved: " + backupFile.getAbsolutePath());
+            return true;
+        } catch (Exception e) {
+            showToast("Backup failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    @JavascriptInterface
+    public boolean restore(String filename) {
+        try {
+            File backupFile = new File(context.getExternalFilesDir(null), filename);
+            if (!backupFile.exists()) {
+                showToast("Backup file not found");
+                return false;
+            }
+            
+            db.close();
+            
+            File dbFile = context.getDatabasePath(DATABASE_NAME);
+            FileInputStream fis = new FileInputStream(backupFile);
+            FileOutputStream fos = new FileOutputStream(dbFile);
+            
+            byte[] buffer = new byte[4096];
+            int length;
+            while ((length = fis.read(buffer)) > 0) {
+                fos.write(buffer, 0, length);
+            }
+            
+            fos.close();
+            fis.close();
+            
+            db = getWritableDatabase();
+            showToast("Database restored");
+            return true;
+        } catch (Exception e) {
+            showToast("Restore failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    @JavascriptInterface
+    public String getBackupPath() {
+        return context.getExternalFilesDir(null).getAbsolutePath();
+    }
+
+    // ==================== HELPERS ====================
+
+    private String cursorToJSON(Cursor cursor) {
+        JSONArray results = new JSONArray();
+        try {
+            String[] columns = cursor.getColumnNames();
+            while (cursor.moveToNext()) {
+                JSONObject row = new JSONObject();
+                for (String col : columns) {
+                    int idx = cursor.getColumnIndex(col);
+                    int type = cursor.getType(idx);
+                    switch (type) {
+                        case Cursor.FIELD_TYPE_INTEGER:
+                            row.put(col, cursor.getLong(idx));
+                            break;
+                        case Cursor.FIELD_TYPE_FLOAT:
+                            row.put(col, cursor.getDouble(idx));
+                            break;
+                        case Cursor.FIELD_TYPE_NULL:
+                            row.put(col, JSONObject.NULL);
+                            break;
+                        default:
+                            row.put(col, cursor.getString(idx));
+                    }
+                }
+                results.put(row);
+            }
+        } catch (Exception e) {}
+        cursor.close();
+        return results.toString();
+    }
+
+    private int getChangedRows() {
+        try {
+            Cursor cursor = db.rawQuery("SELECT changes()", null);
+            int changes = 0;
+            if (cursor.moveToFirst()) {
+                changes = cursor.getInt(0);
+            }
+            cursor.close();
+            return changes;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private void showToast(final String message) {
+        ((android.app.Activity) context).runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                Toast.makeText(context, message, Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    private void showToastOnUI(final String message) {
+        showToast(message);
+    }
+
+    public void closeDatabase() {
+        if (db != null && db.isOpen()) {
+            db.close();
+        }
+    }
+}

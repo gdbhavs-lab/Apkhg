@@ -1,0 +1,121 @@
+package {{PACKAGE}};
+
+import android.webkit.JavascriptInterface;
+import android.webkit.WebView;
+import android.util.Log;
+
+import org.json.JSONObject;
+import org.json.JSONException;
+
+/**
+ * JavaScript Bridge للتواصل مع HardwareDeviceManager
+ */
+public class HardwareDeviceBridge {
+    private static final String TAG = "HardwareDeviceBridge";
+    private HardwareDeviceManager hardwareManager;
+    private WebView webView;
+    
+    public HardwareDeviceBridge(HardwareDeviceManager hardwareManager, WebView webView) {
+        this.hardwareManager = hardwareManager;
+        this.webView = webView;
+    }
+    
+    @JavascriptInterface
+    public String getDeviceInfo(String deviceName) {
+        try {
+            return hardwareManager.getDeviceInfo(deviceName);
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting device info", e);
+            return createErrorResponse(e.getMessage());
+        }
+    }
+    
+    @JavascriptInterface
+    public String getAllDevices() {
+        try {
+            return hardwareManager.getAllDevices();
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting all devices", e);
+            return createErrorResponse(e.getMessage());
+        }
+    }
+    
+    @JavascriptInterface
+    public String getDeviceStatus(String deviceName) {
+        try {
+            return hardwareManager.getDeviceStatus(deviceName);
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting device status", e);
+            return createErrorResponse(e.getMessage());
+        }
+    }
+    
+    @JavascriptInterface
+    public void enableDevice(String deviceName, boolean enable) {
+        try {
+            hardwareManager.enableDevice(deviceName, enable);
+        } catch (Exception e) {
+            Log.e(TAG, "Error enabling/disabling device", e);
+        }
+    }
+    
+    @JavascriptInterface
+    public String getCameraInfo() {
+        try {
+            return hardwareManager.getCameraInfo();
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting camera info", e);
+            return createErrorResponse(e.getMessage());
+        }
+    }
+    
+    @JavascriptInterface
+    public String getAudioInfo() {
+        try {
+            return hardwareManager.getAudioInfo();
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting audio info", e);
+            return createErrorResponse(e.getMessage());
+        }
+    }
+    
+    @JavascriptInterface
+    public void setVolume(int volume) {
+        try {
+            hardwareManager.setVolume(volume);
+        } catch (Exception e) {
+            Log.e(TAG, "Error setting volume", e);
+        }
+    }
+    
+    @JavascriptInterface
+    public String getDeviceHardwareInfo() {
+        try {
+            return hardwareManager.getDeviceHardwareInfo();
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting hardware info", e);
+            return createErrorResponse(e.getMessage());
+        }
+    }
+    
+    @JavascriptInterface
+    public String getSensorInfo() {
+        try {
+            return hardwareManager.getSensorInfo();
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting sensor info", e);
+            return createErrorResponse(e.getMessage());
+        }
+    }
+    
+    private String createErrorResponse(String message) {
+        JSONObject error = new JSONObject();
+        try {
+            error.put("error", true);
+            error.put("message", message);
+        } catch (JSONException e) {
+            Log.e(TAG, "Error creating error response", e);
+        }
+        return error.toString();
+    }
+}

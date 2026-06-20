@@ -1,0 +1,245 @@
+package {{PACKAGE}};
+
+import android.content.Context;
+import android.hardware.Camera;
+import android.media.AudioManager;
+import android.media.MediaRecorder;
+import android.os.Build;
+import android.util.Log;
+import android.webkit.WebView;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+import org.json.JSONObject;
+import org.json.JSONArray;
+import org.json.JSONException;
+
+/**
+ * Hardware Device Manager
+ * نظام متقدم للتواصل مع أجهزة الهاتف عبر HIDL
+ */
+public class HardwareDeviceManager {
+    private static final String TAG = "HardwareDeviceManager";
+    
+    private Context context;
+    private WebView webView;
+    private AudioManager audioManager;
+    private ExecutorService executor;
+    private Map<String, DeviceInfo> devicesMap;
+    private Map<String, Boolean> deviceStates;
+    private Camera camera;
+    private MediaRecorder mediaRecorder;
+    
+    public HardwareDeviceManager(Context context) {
+        this.context = context;
+        this.audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        this.executor = Executors.newFixedThreadPool(3);
+        this.devicesMap = new HashMap<>();
+        this.deviceStates = new HashMap<>();
+        
+        initializeDevices();
+    }
+    
+    /**
+     * ربط WebView للتواصل مع JavaScript
+     */
+    public void setWebView(WebView webView) {
+        this.webView = webView;
+    }
+    
+    /**
+     * تهيئة قائمة الأجهزة المتاحة
+     */
+    private void initializeDevices() {
+        devicesMap.put("camera", new DeviceInfo("camera", "Camera", "1.0", "Front and rear cameras", true));
+        devicesMap.put("microphone", new DeviceInfo("microphone", "Microphone", "1.0", "Built-in microphone", true));
+        devicesMap.put("speaker", new DeviceInfo("speaker", "Speaker", "1.0", "Built-in speaker", true));
+        devicesMap.put("vibrator", new DeviceInfo("vibrator", "Vibrator", "1.0", "Haptic feedback motor", hasVibrator()));
+        devicesMap.put("gps", new DeviceInfo("gps", "GPS", "1.0", "Global Positioning System", true));
+        devicesMap.put("bluetooth", new DeviceInfo("bluetooth", "Bluetooth", "5.0", "Wireless connectivity", true));
+        devicesMap.put("wifi", new DeviceInfo("wifi", "WiFi", "6.0", "Wireless network", true));
+        devicesMap.put("nfc", new DeviceInfo("nfc", "NFC", "1.0", "Near Field Communication", hasNFC()));
+        
+        for (String key : devicesMap.keySet()) {
+            deviceStates.put(key, false);
+        }
+        
+        Log.d(TAG, "Devices initialized: " + devicesMap.size());
+    }
+    
+    /**
+     * الحصول على معلومات جهاز معين
+     */
+    public String getDeviceInfo(String deviceName) {
+        DeviceInfo info = devicesMap.get(deviceName);
+        if (info == null) {
+            return createErrorResponse("Device not found: " + deviceName);
+        }
+        return info.toJSON().toString();
+    }
+    
+    /**
+     * الحصول على قائمة جميع الأجهزة المتاحة
+     */
+    public String getAllDevices() {
+        JSONArray devices = new JSONArray();
+        for (DeviceInfo info : devicesMap.values()) {
+            devices.put(info.toJSON());
+        }
+        return devices.toString();
+    }
+    
+    /**
+     * الحصول على حالة جهاز معين
+     */
+    public String getDeviceStatus(String deviceName) throws JSONException {
+        Boolean state = deviceStates.get(deviceName);
+        if (state == null) {
+            return createErrorResponse("Device not found: " + deviceName);
+        }
+        
+        JSONObject status = new JSONObject();
+        status.put("device", deviceName);
+        status.put("enabled", state);
+        status.put("timestamp", System.currentTimeMillis());
+        return status.toString();
+    }
+    
+    /**
+     * تفعيل/تعطيل جهاز
+     */
+    public void enableDevice(String deviceName, boolean enable) {
+        deviceStates.put(deviceName, enable);
+        Log.d(TAG, "Device " + deviceName + " " + (enable ? "enabled" : "disabled"));
+    }
+    
+    /**
+     * الحصول على معلومات الكاميرا
+     */
+    public String getCameraInfo() throws JSONException {
+        JSONObject cameraInfo = new JSONObject();
+        int cameraCount = Camera.getNumberOfCameras();
+        cameraInfo.put("camera_count", cameraCount);
+        return cameraInfo.toString();
+    }
+    
+    /**
+     * الحصول على معلومات الصوت
+     */
+    public String getAudioInfo() throws JSONException {
+        JSONObject audioInfo = new JSONObject();
+        audioInfo.put("music_volume", audioManager.getStreamVolume(AudioManager.STREAM_MUSIC));
+        audioInfo.put("music_max_volume", audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
+        return audioInfo.toString();
+    }
+    
+    /**
+     * ضبط مستوى الصوت
+     */
+    public void setVolume(int volume) {
+        int maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+        if (volume > maxVolume) volume = maxVolume;
+        if (volume < 0) volume = 0;
+        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, volume, 0);
+        Log.d(TAG, "Volume set to: " + volume);
+    }
+    
+    /**
+     * الحصول على معلومات الجهاز
+     */
+    public String getDeviceHardwareInfo() throws JSONException {
+        JSONObject hwInfo = new JSONObject();
+        hwInfo.put("device_name", Build.DEVICE);
+        hwInfo.put("manufacturer", Build.MANUFACTURER);
+        hwInfo.put("model", Build.MODEL);
+        hwInfo.put("android_version", Build.VERSION.SDK_INT);
+        return hwInfo.toString();
+    }
+    
+    /**
+     * الحصول على معلومات المستشعرات
+     */
+    public String getSensorInfo() throws JSONException {
+        JSONObject sensorInfo = new JSONObject();
+        sensorInfo.put("accelerometer", "Available");
+        sensorInfo.put("compass", "Available");
+        sensorInfo.put("gyroscope", "Available");
+        return sensorInfo.toString();
+    }
+    
+    /**
+     * التحقق من وجود الاهتزاز
+     */
+    private boolean hasVibrator() {
+        try {
+            android.os.Vibrator vibrator = (android.os.Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
+            return vibrator != null && vibrator.hasVibrator();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+    
+    /**
+     * التحقق من وجود NFC
+     */
+    private boolean hasNFC() {
+        try {
+            android.nfc.NfcManager nfcManager = (android.nfc.NfcManager) context.getSystemService(Context.NFC_SERVICE);
+            return nfcManager != null && nfcManager.getDefaultAdapter() != null;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+    
+    /**
+     * إنشاء رسالة خطأ
+     */
+    private String createErrorResponse(String message) throws JSONException {
+        JSONObject error = new JSONObject();
+        error.put("error", true);
+        error.put("message", message);
+        return error.toString();
+    }
+    
+    /**
+     * تنظيف الموارد
+     */
+    public void shutdown() {
+        executor.shutdown();
+        Log.d(TAG, "Hardware Device Manager shutdown");
+    }
+    
+    /**
+     * فئة لتخزين معلومات الجهاز
+     */
+    private static class DeviceInfo {
+        String id;
+        String name;
+        String version;
+        String description;
+        boolean available;
+        
+        DeviceInfo(String id, String name, String version, String description, boolean available) {
+            this.id = id;
+            this.name = name;
+            this.version = version;
+            this.description = description;
+            this.available = available;
+        }
+        
+        JSONObject toJSON() throws JSONException {
+            JSONObject obj = new JSONObject();
+            obj.put("id", id);
+            obj.put("name", name);
+            obj.put("version", version);
+            obj.put("description", description);
+            obj.put("available", available);
+            return obj;
+        }
+    }
+}

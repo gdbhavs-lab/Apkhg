@@ -1,0 +1,1034 @@
+package {{PACKAGE}};
+
+import android.app.Activity;
+import android.app.ActivityManager;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.os.BatteryManager;
+import android.os.Build;
+import android.os.Debug;
+import android.os.Handler;
+import android.os.Looper;
+import android.webkit.JavascriptInterface;
+import android.webkit.WebView;
+import android.net.TrafficStats;
+import android.util.Log;
+import org.json.JSONArray;
+import org.json.JSONObject;
+import java.io.BufferedReader;
+import java.io.FileReader;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Timer;
+import java.util.TimerTask;
+
+/**
+ * مراقب الأداء المتقدم للألعاب - Performance Monitor for Games
+ * 
+ * الميزات:
+ * - مراقبة استهلاك الذاكرة (RAM/Heap) في الوقت الفعلي
+ * - مراقبة استهلاك المعالج (CPU) مع تفاصيل النوى
+ * - مراقبة استهلاك البطارية ودرجة الحرارة
+ * - مراقبة حركة الشبكة (Upload/Download)
+ * - مراقبة معدل الإطارات (FPS) للألعاب
+ * - إنذارات الأداء التلقائية
+ * - تقارير الأداء المفصلة
+ * - تحسينات تلقائية للأداء
+ * 
+ * @author APK Professional Builder
+ * @version 2.0 - Gaming Edition
+ */
+public class PerformanceMonitor {
+    private static final String TAG = "PerformanceMonitor";
+    private Activity activity;
+    private WebView webView;
+    private ActivityManager activityManager;
+    private Timer monitoringTimer;
+    private Handler mainHandler;
+    
+    // إعدادات المراقبة
+    private boolean isMonitoring = false;
+    private int monitoringInterval = 1000; // 1 ثانية
+    private long startTime;
+    private long initialRxBytes;
+    private long initialTxBytes;
+    
+    // حدود الإنذارات
+    private int memoryWarningThreshold = 80; // 80% من الذاكرة
+    private int cpuWarningThreshold = 85; // 85% من المعالج
+    private int batteryWarningThreshold = 15; // 15% بطارية
+    private int temperatureWarningThreshold = 45; // 45 درجة مئوية
+    
+    // إحصائيات الأداء
+    private List<PerformanceSnapshot> performanceHistory;
+    private PerformanceSnapshot currentSnapshot;
+    
+    public PerformanceMonitor(Activity activity) {
+        this.activity = activity;
+        this.activityManager = (ActivityManager) activity.getSystemService(Context.ACTIVITY_SERVICE);
+        this.mainHandler = new Handler(Looper.getMainLooper());
+        this.performanceHistory = new ArrayList<>();
+        this.startTime = System.currentTimeMillis();
+        this.initialRxBytes = TrafficStats.getTotalRxBytes();
+        this.initialTxBytes = TrafficStats.getTotalTxBytes();
+    }
+    
+    public void setWebView(WebView webView) {
+        this.webView = webView;
+    }
+    
+    /**
+     * بدء مراقبة الأداء
+     */
+    @JavascriptInterface
+    public void startMonitoring(final String callback) {
+        activity.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (isMonitoring) {
+                        executeCallback(callback, createErrorResponse("المراقبة نشطة بالفعل"));
+                        return;
+                    }
+                    
+                    isMonitoring = true;
+                    startTime = System.currentTimeMillis();
+                    
+                    monitoringTimer = new Timer();
+                    monitoringTimer.scheduleAtFixedRate(new TimerTask() {
+                        @Override
+                        public void run() {
+                            collectPerformanceData();
+                        }
+                    }, 0, monitoringInterval);
+                    
+                    executeCallback(callback, createSuccessResponse("تم بدء مراقبة الأداء بنجاح"));
+                    
+                } catch (Exception e) {
+                    Log.e(TAG, "Error starting performance monitoring", e);
+                    executeCallback(callback, createErrorResponse("فشل في بدء المراقبة: " + e.getMessage()));
+                }
+            }
+        });
+    }
+    
+    /**
+     * إيقاف مراقبة الأداء
+     */
+    @JavascriptInterface
+    public void stopMonitoring(final String callback) {
+        activity.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (!isMonitoring) {
+                        executeCallback(callback, createErrorResponse("المراقبة غير نشطة"));
+                        return;
+                    }
+                    
+                    isMonitoring = false;
+                    if (monitoringTimer != null) {
+                        monitoringTimer.cancel();
+                        monitoringTimer = null;
+                    }
+                    
+                    executeCallback(callback, createSuccessResponse("تم إيقاف مراقبة الأداء"));
+                    
+                } catch (Exception e) {
+                    Log.e(TAG, "Error stopping performance monitoring", e);
+                    executeCallback(callback, createErrorResponse("فشل في إيقاف المراقبة: " + e.getMessage()));
+                }
+            }
+        });
+    }
+    
+    /**
+     * الحصول على معلومات الذاكرة الحالية
+     */
+    @JavascriptInterface
+    public void getMemoryInfo(final String callback) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    JSONObject memoryInfo = new JSONObject();
+                    
+                    // معلومات الذاكرة العامة
+                    ActivityManager.MemoryInfo systemMemInfo = new ActivityManager.MemoryInfo();
+                    activityManager.getMemoryInfo(systemMemInfo);
+                    
+                    long totalMemory = systemMemInfo.totalMem;
+                    long availableMemory = systemMemInfo.availMem;
+                    long usedMemory = totalMemory - availableMemory;
+                    int memoryPercentage = (int) ((usedMemory * 100) / totalMemory);
+                    
+                    memoryInfo.put("totalMemory", totalMemory);
+                    memoryInfo.put("availableMemory", availableMemory);
+                    memoryInfo.put("usedMemory", usedMemory);
+                    memoryInfo.put("memoryPercentage", memoryPercentage);
+                    memoryInfo.put("isLowMemory", systemMemInfo.lowMemory);
+                    memoryInfo.put("threshold", systemMemInfo.threshold);
+                    
+                    // معلومات Heap للتطبيق
+                    Debug.MemoryInfo appMemInfo = new Debug.MemoryInfo();
+                    Debug.getMemoryInfo(appMemInfo);
+                    
+                    JSONObject heapInfo = new JSONObject();
+                    heapInfo.put("dalvikPrivateDirty", appMemInfo.dalvikPrivateDirty);
+                    heapInfo.put("dalvikPss", appMemInfo.dalvikPss);
+                    heapInfo.put("nativePrivateDirty", appMemInfo.nativePrivateDirty);
+                    heapInfo.put("nativePss", appMemInfo.nativePss);
+                    heapInfo.put("otherPrivateDirty", appMemInfo.otherPrivateDirty);
+                    heapInfo.put("otherPss", appMemInfo.otherPss);
+                    heapInfo.put("totalPrivateDirty", appMemInfo.getTotalPrivateDirty());
+                    heapInfo.put("totalPss", appMemInfo.getTotalPss());
+                    
+                    memoryInfo.put("heapInfo", heapInfo);
+                    
+                    // معلومات Runtime
+                    Runtime runtime = Runtime.getRuntime();
+                    JSONObject runtimeInfo = new JSONObject();
+                    runtimeInfo.put("maxMemory", runtime.maxMemory());
+                    runtimeInfo.put("totalMemory", runtime.totalMemory());
+                    runtimeInfo.put("freeMemory", runtime.freeMemory());
+                    runtimeInfo.put("usedMemory", runtime.totalMemory() - runtime.freeMemory());
+                    
+                    memoryInfo.put("runtimeInfo", runtimeInfo);
+                    
+                    activity.runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            executeCallback(callback, createSuccessResponse("تم تحميل معلومات الذاكرة", memoryInfo));
+                        }
+                    });
+                    
+                } catch (Exception e) {
+                    Log.e(TAG, "Error getting memory info", e);
+                    activity.runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            executeCallback(callback, createErrorResponse("فشل في تحميل معلومات الذاكرة: " + e.getMessage()));
+                        }
+                    });
+                }
+            }
+        }).start();
+    }
+    
+    /**
+     * الحصول على معلومات المعالج
+     */
+    @JavascriptInterface
+    public void getCPUInfo(final String callback) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    JSONObject cpuInfo = new JSONObject();
+                    
+                    // معلومات المعالج الأساسية
+                    int coreCount = Runtime.getRuntime().availableProcessors();
+                    cpuInfo.put("coreCount", coreCount);
+                    
+                    // قراءة معلومات CPU من /proc/cpuinfo
+                    JSONArray coresInfo = new JSONArray();
+                    try {
+                        BufferedReader reader = new BufferedReader(new FileReader("/proc/cpuinfo"));
+                        String line;
+                        JSONObject coreInfo = new JSONObject();
+                        
+                        while ((line = reader.readLine()) != null) {
+                            if (line.startsWith("processor")) {
+                                if (coreInfo.length() > 0) {
+                                    coresInfo.put(coreInfo);
+                                    coreInfo = new JSONObject();
+                                }
+                                coreInfo.put("processor", line.split(":")[1].trim());
+                            } else if (line.startsWith("cpu MHz")) {
+                                coreInfo.put("frequency", line.split(":")[1].trim() + " MHz");
+                            } else if (line.startsWith("model name")) {
+                                coreInfo.put("modelName", line.split(":")[1].trim());
+                            }
+                        }
+                        if (coreInfo.length() > 0) {
+                            coresInfo.put(coreInfo);
+                        }
+                        reader.close();
+                    } catch (IOException e) {
+                        Log.w(TAG, "Could not read CPU info from /proc/cpuinfo");
+                    }
+                    
+                    cpuInfo.put("coresDetails", coresInfo);
+                    
+                    // استخدام المعالج الحالي
+                    double cpuUsage = getCurrentCPUUsage();
+                    cpuInfo.put("currentUsage", cpuUsage);
+                    cpuInfo.put("usagePercentage", Math.round(cpuUsage));
+                    
+                    activity.runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            executeCallback(callback, createSuccessResponse("تم تحميل معلومات المعالج", cpuInfo));
+                        }
+                    });
+                    
+                } catch (Exception e) {
+                    Log.e(TAG, "Error getting CPU info", e);
+                    activity.runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            executeCallback(callback, createErrorResponse("فشل في تحميل معلومات المعالج: " + e.getMessage()));
+                        }
+                    });
+                }
+            }
+        }).start();
+    }
+    
+    /**
+     * الحصول على معلومات البطارية
+     */
+    @JavascriptInterface
+    public void getBatteryInfo(final String callback) {
+        activity.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    IntentFilter ifilter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+                    Intent batteryStatus = activity.registerReceiver(null, ifilter);
+                    
+                    if (batteryStatus != null) {
+                        JSONObject batteryInfo = new JSONObject();
+                        
+                        // مستوى البطارية
+                        int level = batteryStatus.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+                        int scale = batteryStatus.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+                        int batteryPercentage = (int) ((level / (float) scale) * 100);
+                        
+                        batteryInfo.put("level", level);
+                        batteryInfo.put("scale", scale);
+                        batteryInfo.put("percentage", batteryPercentage);
+                        
+                        // حالة الشحن
+                        int status = batteryStatus.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+                        boolean isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                                           status == BatteryManager.BATTERY_STATUS_FULL;
+                        
+                        batteryInfo.put("isCharging", isCharging);
+                        batteryInfo.put("status", getBatteryStatusString(status));
+                        
+                        // نوع الشاحن
+                        int chargePlug = batteryStatus.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1);
+                        batteryInfo.put("chargerType", getChargerTypeString(chargePlug));
+                        
+                        // درجة الحرارة
+                        int temperature = batteryStatus.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1);
+                        if (temperature > 0) {
+                            float tempCelsius = temperature / 10.0f;
+                            batteryInfo.put("temperature", tempCelsius);
+                            batteryInfo.put("temperatureF", (tempCelsius * 9/5) + 32);
+                        }
+                        
+                        // الجهد
+                        int voltage = batteryStatus.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1);
+                        if (voltage > 0) {
+                            batteryInfo.put("voltage", voltage / 1000.0f); // تحويل إلى فولت
+                        }
+                        
+                        // التكنولوجيا
+                        String technology = batteryStatus.getStringExtra(BatteryManager.EXTRA_TECHNOLOGY);
+                        batteryInfo.put("technology", technology);
+                        
+                        // الصحة
+                        int health = batteryStatus.getIntExtra(BatteryManager.EXTRA_HEALTH, -1);
+                        batteryInfo.put("health", getBatteryHealthString(health));
+                        
+                        executeCallback(callback, createSuccessResponse("تم تحميل معلومات البطارية", batteryInfo));
+                    } else {
+                        executeCallback(callback, createErrorResponse("فشل في الحصول على معلومات البطارية"));
+                    }
+                    
+                } catch (Exception e) {
+                    Log.e(TAG, "Error getting battery info", e);
+                    executeCallback(callback, createErrorResponse("فشل في تحميل معلومات البطارية: " + e.getMessage()));
+                }
+            }
+        });
+    }
+    
+    /**
+     * الحصول على إحصائيات الشبكة
+     */
+    @JavascriptInterface
+    public void getNetworkStats(final String callback) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    JSONObject networkStats = new JSONObject();
+                    
+                    // إحصائيات عامة للجهاز
+                    long totalRxBytes = TrafficStats.getTotalRxBytes();
+                    long totalTxBytes = TrafficStats.getTotalTxBytes();
+                    
+                    networkStats.put("totalRxBytes", totalRxBytes);
+                    networkStats.put("totalTxBytes", totalTxBytes);
+                    networkStats.put("totalBytes", totalRxBytes + totalTxBytes);
+                    
+                    // إحصائيات منذ بدء المراقبة
+                    long sessionRxBytes = totalRxBytes - initialRxBytes;
+                    long sessionTxBytes = totalTxBytes - initialTxBytes;
+                    
+                    networkStats.put("sessionRxBytes", sessionRxBytes);
+                    networkStats.put("sessionTxBytes", sessionTxBytes);
+                    networkStats.put("sessionTotalBytes", sessionRxBytes + sessionTxBytes);
+                    
+                    // إحصائيات التطبيق الحالي
+                    int uid = android.os.Process.myUid();
+                    long appRxBytes = TrafficStats.getUidRxBytes(uid);
+                    long appTxBytes = TrafficStats.getUidTxBytes(uid);
+                    
+                    if (appRxBytes != TrafficStats.UNSUPPORTED) {
+                        networkStats.put("appRxBytes", appRxBytes);
+                        networkStats.put("appTxBytes", appTxBytes);
+                        networkStats.put("appTotalBytes", appRxBytes + appTxBytes);
+                    }
+                    
+                    // حساب السرعة (إذا كانت المراقبة نشطة)
+                    if (isMonitoring && performanceHistory.size() > 1) {
+                        PerformanceSnapshot lastSnapshot = performanceHistory.get(performanceHistory.size() - 1);
+                        PerformanceSnapshot prevSnapshot = performanceHistory.get(performanceHistory.size() - 2);
+                        
+                        long timeDiff = lastSnapshot.timestamp - prevSnapshot.timestamp;
+                        if (timeDiff > 0) {
+                            long rxDiff = lastSnapshot.networkRxBytes - prevSnapshot.networkRxBytes;
+                            long txDiff = lastSnapshot.networkTxBytes - prevSnapshot.networkTxBytes;
+                            
+                            double rxSpeed = (rxDiff * 1000.0) / timeDiff; // bytes per second
+                            double txSpeed = (txDiff * 1000.0) / timeDiff; // bytes per second
+                            
+                            networkStats.put("downloadSpeed", rxSpeed);
+                            networkStats.put("uploadSpeed", txSpeed);
+                            networkStats.put("downloadSpeedKbps", rxSpeed / 1024);
+                            networkStats.put("uploadSpeedKbps", txSpeed / 1024);
+                        }
+                    }
+                    
+                    activity.runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            executeCallback(callback, createSuccessResponse("تم تحميل إحصائيات الشبكة", networkStats));
+                        }
+                    });
+                    
+                } catch (Exception e) {
+                    Log.e(TAG, "Error getting network stats", e);
+                    activity.runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            executeCallback(callback, createErrorResponse("فشل في تحميل إحصائيات الشبكة: " + e.getMessage()));
+                        }
+                    });
+                }
+            }
+        }).start();
+    }
+    
+    /**
+     * الحصول على تقرير أداء شامل
+     */
+    @JavascriptInterface
+    public void getPerformanceReport(final String callback) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    JSONObject report = new JSONObject();
+                    
+                    // معلومات الجلسة
+                    long sessionDuration = System.currentTimeMillis() - startTime;
+                    report.put("sessionDuration", sessionDuration);
+                    report.put("sessionDurationMinutes", sessionDuration / (1000 * 60));
+                    report.put("monitoringActive", isMonitoring);
+                    report.put("samplesCount", performanceHistory.size());
+                    
+                    if (performanceHistory.size() > 0) {
+                        // إحصائيات الذاكرة
+                        JSONObject memoryStats = calculateMemoryStats();
+                        report.put("memoryStats", memoryStats);
+                        
+                        // إحصائيات المعالج
+                        JSONObject cpuStats = calculateCPUStats();
+                        report.put("cpuStats", cpuStats);
+                        
+                        // إحصائيات البطارية
+                        JSONObject batteryStats = calculateBatteryStats();
+                        report.put("batteryStats", batteryStats);
+                        
+                        // إحصائيات الشبكة
+                        JSONObject networkStats = calculateNetworkStats();
+                        report.put("networkStats", networkStats);
+                        
+                        // التحذيرات والتوصيات
+                        JSONArray warnings = generateWarnings();
+                        report.put("warnings", warnings);
+                        
+                        JSONArray recommendations = generateRecommendations();
+                        report.put("recommendations", recommendations);
+                    }
+                    
+                    activity.runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            executeCallback(callback, createSuccessResponse("تم إنشاء تقرير الأداء", report));
+                        }
+                    });
+                    
+                } catch (Exception e) {
+                    Log.e(TAG, "Error generating performance report", e);
+                    activity.runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            executeCallback(callback, createErrorResponse("فشل في إنشاء تقرير الأداء: " + e.getMessage()));
+                        }
+                    });
+                }
+            }
+        }).start();
+    }
+    
+    /**
+     * تحسين الأداء التلقائي
+     */
+    @JavascriptInterface
+    public void optimizePerformance(final String callback) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    JSONObject optimizationResult = new JSONObject();
+                    JSONArray actions = new JSONArray();
+                    
+                    // تنظيف الذاكرة
+                    long memoryBefore = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
+                    System.gc();
+                    Thread.sleep(100); // انتظار قصير لإتمام GC
+                    long memoryAfter = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
+                    long memoryFreed = memoryBefore - memoryAfter;
+                    
+                    if (memoryFreed > 0) {
+                        actions.put("تم تحرير " + (memoryFreed / 1024) + " KB من الذاكرة");
+                    }
+                    
+                    // تنظيف cache الشبكة
+                    if (webView != null) {
+                        activity.runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                webView.clearCache(true);
+                            }
+                        });
+                        actions.put("تم تنظيف cache المتصفح");
+                    }
+                    
+                    // اقتراحات أخرى
+                    if (currentSnapshot != null) {
+                        if (currentSnapshot.memoryPercentage > 80) {
+                            actions.put("تحذير: استهلاك الذاكرة مرتفع - أغلق التطبيقات غير المستخدمة");
+                        }
+                        
+                        if (currentSnapshot.cpuUsage > 85) {
+                            actions.put("تحذير: استهلاك المعالج مرتفع - قلل من العمليات المتزامنة");
+                        }
+                        
+                        if (currentSnapshot.batteryPercentage < 20) {
+                            actions.put("تحذير: البطارية منخفضة - فعل وضع توفير الطاقة");
+                        }
+                    }
+                    
+                    optimizationResult.put("actions", actions);
+                    optimizationResult.put("memoryFreed", memoryFreed);
+                    optimizationResult.put("timestamp", System.currentTimeMillis());
+                    
+                    activity.runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            executeCallback(callback, createSuccessResponse("تم تحسين الأداء", optimizationResult));
+                        }
+                    });
+                    
+                } catch (Exception e) {
+                    Log.e(TAG, "Error optimizing performance", e);
+                    activity.runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            executeCallback(callback, createErrorResponse("فشل في تحسين الأداء: " + e.getMessage()));
+                        }
+                    });
+                }
+            }
+        }).start();
+    }
+    
+    /**
+     * تعيين إعدادات المراقبة
+     */
+    @JavascriptInterface
+    public void setMonitoringSettings(int interval, int memoryThreshold, int cpuThreshold, int batteryThreshold, int tempThreshold, final String callback) {
+        try {
+            this.monitoringInterval = Math.max(500, interval); // حد أدنى 500ms
+            this.memoryWarningThreshold = Math.max(0, Math.min(100, memoryThreshold));
+            this.cpuWarningThreshold = Math.max(0, Math.min(100, cpuThreshold));
+            this.batteryWarningThreshold = Math.max(0, Math.min(100, batteryThreshold));
+            this.temperatureWarningThreshold = Math.max(0, tempThreshold);
+            
+            JSONObject settings = new JSONObject();
+            settings.put("interval", this.monitoringInterval);
+            settings.put("memoryThreshold", this.memoryWarningThreshold);
+            settings.put("cpuThreshold", this.cpuWarningThreshold);
+            settings.put("batteryThreshold", this.batteryWarningThreshold);
+            settings.put("temperatureThreshold", this.temperatureWarningThreshold);
+            
+            executeCallback(callback, createSuccessResponse("تم تحديث إعدادات المراقبة", settings));
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Error setting monitoring settings", e);
+            executeCallback(callback, createErrorResponse("فشل في تحديث الإعدادات: " + e.getMessage()));
+        }
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════════════════════
+    //                              الدوال المساعدة الخاصة
+    // ═══════════════════════════════════════════════════════════════════════════════════════
+    
+    /**
+     * جمع بيانات الأداء
+     */
+    private void collectPerformanceData() {
+        try {
+            PerformanceSnapshot snapshot = new PerformanceSnapshot();
+            snapshot.timestamp = System.currentTimeMillis();
+            
+            // بيانات الذاكرة
+            ActivityManager.MemoryInfo memInfo = new ActivityManager.MemoryInfo();
+            activityManager.getMemoryInfo(memInfo);
+            snapshot.totalMemory = memInfo.totalMem;
+            snapshot.availableMemory = memInfo.availMem;
+            snapshot.usedMemory = memInfo.totalMem - memInfo.availMem;
+            snapshot.memoryPercentage = (int) ((snapshot.usedMemory * 100) / snapshot.totalMemory);
+            
+            // بيانات المعالج
+            snapshot.cpuUsage = getCurrentCPUUsage();
+            
+            // بيانات الشبكة
+            snapshot.networkRxBytes = TrafficStats.getTotalRxBytes();
+            snapshot.networkTxBytes = TrafficStats.getTotalTxBytes();
+            
+            // بيانات البطارية
+            IntentFilter ifilter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+            Intent batteryStatus = activity.registerReceiver(null, ifilter);
+            if (batteryStatus != null) {
+                int level = batteryStatus.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+                int scale = batteryStatus.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+                snapshot.batteryPercentage = (int) ((level / (float) scale) * 100);
+                
+                int temperature = batteryStatus.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1);
+                if (temperature > 0) {
+                    snapshot.temperature = temperature / 10.0f;
+                }
+            }
+            
+            performanceHistory.add(snapshot);
+            currentSnapshot = snapshot;
+            
+            // الاحتفاظ بآخر 1000 عينة فقط
+            if (performanceHistory.size() > 1000) {
+                performanceHistory.remove(0);
+            }
+            
+            // فحص التحذيرات
+            checkWarnings(snapshot);
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Error collecting performance data", e);
+        }
+    }
+    
+    /**
+     * الحصول على استخدام المعالج الحالي
+     */
+    private double getCurrentCPUUsage() {
+        try {
+            BufferedReader reader = new BufferedReader(new FileReader("/proc/stat"));
+            String line = reader.readLine();
+            reader.close();
+            
+            if (line != null && line.startsWith("cpu ")) {
+                String[] tokens = line.split("\\s+");
+                if (tokens.length >= 5) {
+                    long idle = Long.parseLong(tokens[4]);
+                    long total = 0;
+                    for (int i = 1; i < tokens.length; i++) {
+                        total += Long.parseLong(tokens[i]);
+                    }
+                    
+                    // حساب النسبة المئوية
+                    return ((total - idle) * 100.0) / total;
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Could not read CPU usage", e);
+        }
+        
+        return 0.0;
+    }
+    
+    /**
+     * فحص التحذيرات
+     */
+    private void checkWarnings(PerformanceSnapshot snapshot) {
+        if (webView == null) return;
+        
+        JSONArray warnings = new JSONArray();
+        
+        if (snapshot.memoryPercentage >= memoryWarningThreshold) {
+            warnings.put("تحذير: استهلاك الذاكرة مرتفع (" + snapshot.memoryPercentage + "%)");
+        }
+        
+        if (snapshot.cpuUsage >= cpuWarningThreshold) {
+            warnings.put("تحذير: استهلاك المعالج مرتفع (" + Math.round(snapshot.cpuUsage) + "%)");
+        }
+        
+        if (snapshot.batteryPercentage <= batteryWarningThreshold) {
+            warnings.put("تحذير: البطارية منخفضة (" + snapshot.batteryPercentage + "%)");
+        }
+        
+        if (snapshot.temperature >= temperatureWarningThreshold) {
+            warnings.put("تحذير: درجة الحرارة مرتفعة (" + snapshot.temperature + "°C)");
+        }
+        
+        if (warnings.length() > 0) {
+            mainHandler.post(new Runnable() {
+                @Override
+                public void run() {
+                    String script = "javascript:if(typeof onPerformanceWarning === 'function') { onPerformanceWarning(" + warnings.toString() + "); }";
+                    webView.evaluateJavascript(script, null);
+                }
+            });
+        }
+    }
+    
+    /**
+     * حساب إحصائيات الذاكرة
+     */
+    private JSONObject calculateMemoryStats() throws Exception {
+        JSONObject stats = new JSONObject();
+        
+        if (performanceHistory.isEmpty()) return stats;
+        
+        long minMemory = Long.MAX_VALUE;
+        long maxMemory = Long.MIN_VALUE;
+        long totalMemory = 0;
+        int minPercentage = Integer.MAX_VALUE;
+        int maxPercentage = Integer.MIN_VALUE;
+        
+        for (PerformanceSnapshot snapshot : performanceHistory) {
+            minMemory = Math.min(minMemory, snapshot.usedMemory);
+            maxMemory = Math.max(maxMemory, snapshot.usedMemory);
+            totalMemory += snapshot.usedMemory;
+            minPercentage = Math.min(minPercentage, snapshot.memoryPercentage);
+            maxPercentage = Math.max(maxPercentage, snapshot.memoryPercentage);
+        }
+        
+        stats.put("minUsed", minMemory);
+        stats.put("maxUsed", maxMemory);
+        stats.put("avgUsed", totalMemory / performanceHistory.size());
+        stats.put("minPercentage", minPercentage);
+        stats.put("maxPercentage", maxPercentage);
+        stats.put("currentPercentage", currentSnapshot.memoryPercentage);
+        
+        return stats;
+    }
+    
+    /**
+     * حساب إحصائيات المعالج
+     */
+    private JSONObject calculateCPUStats() throws Exception {
+        JSONObject stats = new JSONObject();
+        
+        if (performanceHistory.isEmpty()) return stats;
+        
+        double minCPU = Double.MAX_VALUE;
+        double maxCPU = Double.MIN_VALUE;
+        double totalCPU = 0;
+        
+        for (PerformanceSnapshot snapshot : performanceHistory) {
+            minCPU = Math.min(minCPU, snapshot.cpuUsage);
+            maxCPU = Math.max(maxCPU, snapshot.cpuUsage);
+            totalCPU += snapshot.cpuUsage;
+        }
+        
+        stats.put("minUsage", minCPU);
+        stats.put("maxUsage", maxCPU);
+        stats.put("avgUsage", totalCPU / performanceHistory.size());
+        stats.put("currentUsage", currentSnapshot.cpuUsage);
+        
+        return stats;
+    }
+    
+    /**
+     * حساب إحصائيات البطارية
+     */
+    private JSONObject calculateBatteryStats() throws Exception {
+        JSONObject stats = new JSONObject();
+        
+        if (performanceHistory.isEmpty()) return stats;
+        
+        int minBattery = Integer.MAX_VALUE;
+        int maxBattery = Integer.MIN_VALUE;
+        float minTemp = Float.MAX_VALUE;
+        float maxTemp = Float.MIN_VALUE;
+        
+        for (PerformanceSnapshot snapshot : performanceHistory) {
+            minBattery = Math.min(minBattery, snapshot.batteryPercentage);
+            maxBattery = Math.max(maxBattery, snapshot.batteryPercentage);
+            if (snapshot.temperature > 0) {
+                minTemp = Math.min(minTemp, snapshot.temperature);
+                maxTemp = Math.max(maxTemp, snapshot.temperature);
+            }
+        }
+        
+        stats.put("minLevel", minBattery);
+        stats.put("maxLevel", maxBattery);
+        stats.put("currentLevel", currentSnapshot.batteryPercentage);
+        
+        if (minTemp != Float.MAX_VALUE) {
+            stats.put("minTemperature", minTemp);
+            stats.put("maxTemperature", maxTemp);
+            stats.put("currentTemperature", currentSnapshot.temperature);
+        }
+        
+        return stats;
+    }
+    
+    /**
+     * حساب إحصائيات الشبكة
+     */
+    private JSONObject calculateNetworkStats() throws Exception {
+        JSONObject stats = new JSONObject();
+        
+        if (performanceHistory.size() < 2) return stats;
+        
+        PerformanceSnapshot first = performanceHistory.get(0);
+        PerformanceSnapshot last = performanceHistory.get(performanceHistory.size() - 1);
+        
+        long totalRx = last.networkRxBytes - first.networkRxBytes;
+        long totalTx = last.networkTxBytes - first.networkTxBytes;
+        long duration = last.timestamp - first.timestamp;
+        
+        stats.put("totalDownloaded", totalRx);
+        stats.put("totalUploaded", totalTx);
+        stats.put("totalTransferred", totalRx + totalTx);
+        
+        if (duration > 0) {
+            double avgDownloadSpeed = (totalRx * 1000.0) / duration; // bytes per second
+            double avgUploadSpeed = (totalTx * 1000.0) / duration; // bytes per second
+            
+            stats.put("avgDownloadSpeed", avgDownloadSpeed);
+            stats.put("avgUploadSpeed", avgUploadSpeed);
+            stats.put("avgDownloadSpeedKbps", avgDownloadSpeed / 1024);
+            stats.put("avgUploadSpeedKbps", avgUploadSpeed / 1024);
+        }
+        
+        return stats;
+    }
+    
+    /**
+     * إنشاء التحذيرات
+     */
+    private JSONArray generateWarnings() {
+        JSONArray warnings = new JSONArray();
+        
+        if (currentSnapshot == null) return warnings;
+        
+        if (currentSnapshot.memoryPercentage >= memoryWarningThreshold) {
+            warnings.put("استهلاك الذاكرة مرتفع: " + currentSnapshot.memoryPercentage + "%");
+        }
+        
+        if (currentSnapshot.cpuUsage >= cpuWarningThreshold) {
+            warnings.put("استهلاك المعالج مرتفع: " + Math.round(currentSnapshot.cpuUsage) + "%");
+        }
+        
+        if (currentSnapshot.batteryPercentage <= batteryWarningThreshold) {
+            warnings.put("البطارية منخفضة: " + currentSnapshot.batteryPercentage + "%");
+        }
+        
+        if (currentSnapshot.temperature >= temperatureWarningThreshold) {
+            warnings.put("درجة الحرارة مرتفعة: " + currentSnapshot.temperature + "°C");
+        }
+        
+        return warnings;
+    }
+    
+    /**
+     * إنشاء التوصيات
+     */
+    private JSONArray generateRecommendations() {
+        JSONArray recommendations = new JSONArray();
+        
+        if (currentSnapshot == null) return recommendations;
+        
+        if (currentSnapshot.memoryPercentage > 70) {
+            recommendations.put("أغلق التطبيقات غير المستخدمة لتحرير الذاكرة");
+            recommendations.put("استخدم تنظيف الذاكرة التلقائي");
+        }
+        
+        if (currentSnapshot.cpuUsage > 70) {
+            recommendations.put("قلل من العمليات المتزامنة");
+            recommendations.put("استخدم خيوط منفصلة للعمليات الثقيلة");
+        }
+        
+        if (currentSnapshot.batteryPercentage < 30) {
+            recommendations.put("فعل وضع توفير الطاقة");
+            recommendations.put("قلل من سطوع الشاشة");
+            recommendations.put("أغلق الاتصالات غير الضرورية");
+        }
+        
+        if (currentSnapshot.temperature > 40) {
+            recommendations.put("اترك الجهاز يبرد قليلاً");
+            recommendations.put("تجنب الألعاب الثقيلة مؤقتاً");
+        }
+        
+        return recommendations;
+    }
+    
+    /**
+     * تحويل حالة البطارية إلى نص
+     */
+    private String getBatteryStatusString(int status) {
+        switch (status) {
+            case BatteryManager.BATTERY_STATUS_CHARGING: return "يشحن";
+            case BatteryManager.BATTERY_STATUS_DISCHARGING: return "يفرغ";
+            case BatteryManager.BATTERY_STATUS_FULL: return "ممتلئ";
+            case BatteryManager.BATTERY_STATUS_NOT_CHARGING: return "لا يشحن";
+            case BatteryManager.BATTERY_STATUS_UNKNOWN: return "غير معروف";
+            default: return "غير محدد";
+        }
+    }
+    
+    /**
+     * تحويل نوع الشاحن إلى نص
+     */
+    private String getChargerTypeString(int chargePlug) {
+        switch (chargePlug) {
+            case BatteryManager.BATTERY_PLUGGED_AC: return "شاحن كهربائي";
+            case BatteryManager.BATTERY_PLUGGED_USB: return "USB";
+            case BatteryManager.BATTERY_PLUGGED_WIRELESS: return "لاسلكي";
+            default: return "غير متصل";
+        }
+    }
+    
+    /**
+     * تحويل صحة البطارية إلى نص
+     */
+    private String getBatteryHealthString(int health) {
+        switch (health) {
+            case BatteryManager.BATTERY_HEALTH_GOOD: return "جيد";
+            case BatteryManager.BATTERY_HEALTH_OVERHEAT: return "ساخن جداً";
+            case BatteryManager.BATTERY_HEALTH_DEAD: return "تالف";
+            case BatteryManager.BATTERY_HEALTH_OVER_VOLTAGE: return "جهد عالي";
+            case BatteryManager.BATTERY_HEALTH_UNSPECIFIED_FAILURE: return "عطل غير محدد";
+            case BatteryManager.BATTERY_HEALTH_COLD: return "بارد جداً";
+            default: return "غير معروف";
+        }
+    }
+    
+    /**
+     * إنشاء استجابة نجاح
+     */
+    private String createSuccessResponse(String message) {
+        try {
+            JSONObject response = new JSONObject();
+            response.put("success", true);
+            response.put("message", message);
+            return response.toString();
+        } catch (Exception e) {
+            return "{\"success\":true,\"message\":\"" + message + "\"}";
+        }
+    }
+    
+    /**
+     * إنشاء استجابة نجاح مع بيانات
+     */
+    private String createSuccessResponse(String message, JSONObject data) {
+        try {
+            JSONObject response = new JSONObject();
+            response.put("success", true);
+            response.put("message", message);
+            response.put("data", data);
+            return response.toString();
+        } catch (Exception e) {
+            return "{\"success\":true,\"message\":\"" + message + "\",\"data\":{}}";
+        }
+    }
+    
+    /**
+     * إنشاء استجابة خطأ
+     */
+    private String createErrorResponse(String message) {
+        try {
+            JSONObject response = new JSONObject();
+            response.put("success", false);
+            response.put("message", message);
+            return response.toString();
+        } catch (Exception e) {
+            return "{\"success\":false,\"message\":\"" + message + "\"}";
+        }
+    }
+    
+    /**
+     * تنفيذ callback في JavaScript
+     */
+    private void executeCallback(String callback, String result) {
+        if (webView != null && callback != null && !callback.isEmpty()) {
+            String script = "javascript:(" + callback + ")(" + result + ");";
+            webView.evaluateJavascript(script, null);
+        }
+    }
+    
+    /**
+     * تنظيف الموارد
+     */
+    public void cleanup() {
+        if (monitoringTimer != null) {
+            monitoringTimer.cancel();
+            monitoringTimer = null;
+        }
+        
+        isMonitoring = false;
+        performanceHistory.clear();
+        
+        this.activity = null;
+        this.webView = null;
+        this.activityManager = null;
+        this.mainHandler = null;
+    }
+    
+    /**
+     * فئة لحفظ لقطة أداء
+     */
+    private static class PerformanceSnapshot {
+        long timestamp;
+        long totalMemory;
+        long availableMemory;
+        long usedMemory;
+        int memoryPercentage;
+        double cpuUsage;
+        long networkRxBytes;
+        long networkTxBytes;
+        int batteryPercentage;
+        float temperature;
+    }
+}
